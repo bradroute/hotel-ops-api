@@ -4,7 +4,7 @@ const supabase = require('../supabaseClient');
 const classify = require('../classifier');
 
 // POST /sms — Handle incoming SMS from Telnyx
-router.post('/sms', async (req, res) => {
+router.post('/', async (req, res) => {
   console.log('✅ POST /sms route hit');
   console.log('Raw body:', req.body);
 
