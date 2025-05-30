@@ -42,20 +42,21 @@ router.patch('/:id/acknowledge', async (req, res) => {
   const { id } = req.params;
 
   // Step 1: Get the request from Supabase
-  const { data: request, error: fetchError } = await supabase
-    .from('HotelCrosbyRequests') // or '"HotelCrosby Requests"' if not renamed
-    .select('*')
-    .eq('id', id)
-    .single();
+  const { data, error } = await supabase
+  .from('HotelCrosbyRequests')
+  .select('*')
+  .eq('id', id)
+  .single();
 
-  if (fetchError || !request) {
-    console.error('❌ Request not found:', fetchError?.message);
-    return res.status(404).json({ success: false, message: 'Request not found' });
-  }
+  if (fetchError) {
+  console.error('❌ Fetch error:', fetchError.message);
+  return res.status(500).json({ success: false, message: 'Fetch error' });
+}
 
-  if (request.acknowledged) {
-    return res.status(409).json({ success: false, message: 'Already acknowledged' });
-  }
+if (!data) {
+  console.error('❌ No request found for ID:', id);
+  return res.status(404).json({ success: false, message: 'Request not found' });
+}
 
   // Step 2: Mark as acknowledged in Supabase
   const { error: updateError } = await supabase
