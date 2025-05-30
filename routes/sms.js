@@ -42,11 +42,11 @@ router.patch('/:id/acknowledge', async (req, res) => {
   const { id } = req.params;
 
   // Step 1: Get the request from Supabase
-  const { data, error } = await supabase
+  const { data, error: fetchError } = await supabase
   .from('HotelCrosbyRequests')
   .select('*')
   .eq('id', id)
-  .single();
+  .maybeSingle();
 
   if (fetchError) {
   console.error('❌ Fetch error:', fetchError.message);
