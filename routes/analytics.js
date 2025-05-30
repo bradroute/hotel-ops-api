@@ -48,14 +48,15 @@ router.get('/by-department', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('HotelCrosbyRequests')
-      .select('department, count:department')
-      .group('department');
+      .select('department');
 
     if (error) throw error;
 
     const result = {};
+
     data.forEach(row => {
-      result[row.department] = parseInt(row.count);
+      const dept = row.department || 'unknown';
+      result[dept] = (result[dept] || 0) + 1;
     });
 
     res.json(result);
