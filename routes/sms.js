@@ -96,9 +96,12 @@ router.patch('/:id/acknowledge', async (req, res) => {
 
   // Step 2: Mark as acknowledged
   const { error: updateError } = await supabase
-    .from('HotelCrosbyRequests')
-    .update({ acknowledged: true })
-    .eq('id', trimmedId);
+  .from('HotelCrosbyRequests')
+  .update({
+    acknowledged: true,
+    acknowledged_at: new Date().toISOString()
+  })
+  .eq('id', trimmedId);
 
   if (updateError) {
     console.error('❌ Failed to acknowledge request:', updateError.message);
