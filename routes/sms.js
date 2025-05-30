@@ -117,7 +117,7 @@ router.patch('/:id/acknowledge', async (req, res) => {
       },
       body: JSON.stringify({
         from: process.env.TELNYX_NUMBER,
-        to: request.from,
+        to: `${request.from}`,
         text: `Hi! Your request has been received and is being taken care of. - Hotel Crosby`
       })
     });
