@@ -20,7 +20,7 @@ router.post('/', async (req, res) => {
   const { department, priority } = await classify(message);
 
   // Save to Supabase
-  const { error } = await supabase.from('HotelCrosby Requests').insert([
+  const { error } = await supabase.from('HotelCrosbyRequests').insert([
     {
       from,
       message,
