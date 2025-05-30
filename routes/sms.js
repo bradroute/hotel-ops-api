@@ -30,6 +30,23 @@ router.post('/', async (req, res) => {
   // Classify message using OpenAI
   const { department, priority } = await classify(message);
 
+  // Check if this Telnyx message ID has already been logged
+const { data: existing, error: checkError } = await supabase
+  .from('HotelCrosbyRequests')
+  .select('id')
+  .eq('telnyx_id', telnyxId)
+  .maybeSingle();
+
+if (checkError) {
+  console.error('❌ Telnyx ID lookup error:', checkError.message);
+  return res.status(500).send('Error checking for duplicates');
+}
+
+if (existing) {
+  console.log(`⚠️ Duplicate message detected — skipping insert for Telnyx ID: ${telnyxId}`);
+  return res.status(200).send('Duplicate message ignored');
+}
+
   // Save to Supabase and return inserted row(s)
 const { data, error } = await supabase.from('HotelCrosbyRequests').insert([
   { from, message, department, priority, telnyx_id: telnyxId }
