@@ -43,3 +43,24 @@ router.get('/summary', async (req, res) => {
 });
 
 module.exports = router;
+
+router.get('/by-department', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('HotelCrosbyRequests')
+      .select('department, count:department')
+      .group('department');
+
+    if (error) throw error;
+
+    const result = {};
+    data.forEach(row => {
+      result[row.department] = parseInt(row.count);
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error fetching department analytics:', err.message);
+    res.status(500).json({ error: 'Failed to fetch department stats' });
+  }
+});
