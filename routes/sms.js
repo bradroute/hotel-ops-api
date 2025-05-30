@@ -19,17 +19,18 @@ router.post('/', async (req, res) => {
   // Classify message using OpenAI
   const { department, priority } = await classify(message);
 
-  // Save to Supabase
-  const { error } = await supabase.from('HotelCrosbyRequests').insert([
-    { from, message, department, priority }
-  ]);
+  // Save to Supabase and return inserted row(s)
+const { data, error } = await supabase.from('HotelCrosbyRequests').insert([
+  { from, message, department, priority }
+]).select(); // 👈 this is the key
 
-  if (error) {
-    console.error('❌ Error inserting SMS:', error.message);
-    return res.status(500).send('Failed to log request');
-  }
+if (error) {
+  console.error('❌ Error inserting SMS:', error.message);
+  return res.status(500).send('Failed to log request');
+}
 
-  res.status(200).send('✅ Request logged');
+console.log('🆕 Inserted row:', data); // 👈 log the inserted ID
+
 });
 
 // PATCH /sms/:id/acknowledge — Mark a message as acknowledged
