@@ -40,6 +40,7 @@ router.post('/', async (req, res) => {
 // PATCH /sms/:id/acknowledge — Mark a message as acknowledged
 router.patch('/:id/acknowledge', async (req, res) => {
   const { id } = req.params;
+  console.log('🔍 Received ID:', id);
 
   // Step 1: Get the request from Supabase
   const { data, error: fetchError } = await supabase
@@ -47,6 +48,10 @@ router.patch('/:id/acknowledge', async (req, res) => {
   .select('*')
   .eq('id', String(id)) // <- force it to a string just in case
   .maybeSingle();        // <- use maybeSingle() instead of single()
+
+  // 🔍 Debugging logs
+console.log('📦 Supabase data:', data);
+console.log('❌ Fetch error (if any):', fetchError);
 
   if (!data) {
   console.error('❌ Request not found');
