@@ -166,3 +166,19 @@ router.patch('/:id/complete', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to complete request' });
   }
 });
+
+// GET /sms — return all requests
+router.get('/', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('HotelCrosbyRequests')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('❌ Failed to fetch requests:', err.message);
+    res.status(500).json({ error: 'Failed to fetch requests' });
+  }
+});
