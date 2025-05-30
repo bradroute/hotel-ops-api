@@ -66,6 +66,11 @@ router.patch('/:id/acknowledge', async (req, res) => {
 
   const request = data[0];
 
+  if (!request.from) {
+  console.warn(`⚠️ No phone number found for request ID: ${trimmedId}`);
+  return res.status(400).json({ success: false, message: 'Missing phone number on request' });
+}
+
   // Step 2: Mark as acknowledged in Supabase
   const { error: updateError } = await supabase
     .from('HotelCrosbyRequests')
@@ -79,6 +84,8 @@ router.patch('/:id/acknowledge', async (req, res) => {
 
   // Step 3: Send SMS back to guest using Telnyx
   try {
+    console.log('📲 Sending confirmation to:', request.from);
+
     const smsResponse = await fetch('https://api.telnyx.com/v2/messages', {
       method: 'POST',
       headers: {
