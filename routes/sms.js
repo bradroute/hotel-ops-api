@@ -35,9 +35,9 @@ router.post('/', async (req, res) => {
 // PATCH /sms/:id/acknowledge — Mark a message as acknowledged
 router.patch('/:id/acknowledge', async (req, res) => {
   const { id } = req.params;
-  const trimmedId = id.toString().trim(); // force string and trim whitespace
+  const trimmedId = id.toString().trim();
   console.log('🔍 Raw ID:', id);
-  console.log('🧼 Trimmed ID:', trimmedId);
+  console.log('✂️ Trimmed ID:', trimmedId);
 
   // Step 1: Get the request from Supabase
   const { data, error: fetchError } = await supabase
@@ -49,14 +49,14 @@ router.patch('/:id/acknowledge', async (req, res) => {
   console.log('📦 Supabase data:', data);
   console.log('❌ Fetch error (if any):', fetchError);
 
-  if (fetchError) {
-    console.error('❌ Fetch error:', fetchError.message);
-    return res.status(500).json({ success: false, message: 'Fetch error' });
-  }
-
   if (!data) {
     console.error('❌ Request not found for ID:', trimmedId);
     return res.status(404).json({ success: false, message: 'Request not found' });
+  }
+
+  if (fetchError) {
+    console.error('❌ Fetch error:', fetchError.message);
+    return res.status(500).json({ success: false, message: 'Fetch error' });
   }
 
   // Step 2: Mark as acknowledged in Supabase
@@ -75,7 +75,7 @@ router.patch('/:id/acknowledge', async (req, res) => {
     const smsResponse = await fetch('https://api.telnyx.com/v2/messages', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
+        'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
