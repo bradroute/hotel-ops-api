@@ -43,21 +43,22 @@ router.patch('/:id/acknowledge', async (req, res) => {
   const { data, error: fetchError } = await supabase
     .from('HotelCrosbyRequests')
     .select('*')
-    .eq('id', trimmedId)
-    .maybeSingle();
+    .eq('id', trimmedId);
 
-  console.log('📦 Supabase data:', data);
-  console.log('❌ Fetch error (if any):', fetchError);
-
-  if (!data) {
-    console.error('❌ Request not found for ID:', trimmedId);
-    return res.status(404).json({ success: false, message: 'Request not found' });
-  }
+  console.log('📦 Supabase fetch result:', data);
+  console.log('❌ Supabase fetch error:', fetchError);
 
   if (fetchError) {
     console.error('❌ Fetch error:', fetchError.message);
     return res.status(500).json({ success: false, message: 'Fetch error' });
   }
+
+  if (!data || data.length === 0) {
+    console.error(`❌ No request found for ID: ${trimmedId}`);
+    return res.status(404).json({ success: false, message: 'Request not found' });
+  }
+
+  const request = data[0];
 
   // Step 2: Mark as acknowledged in Supabase
   const { error: updateError } = await supabase
@@ -80,7 +81,7 @@ router.patch('/:id/acknowledge', async (req, res) => {
       },
       body: JSON.stringify({
         from: process.env.TELNYX_NUMBER,
-        to: data.from,
+        to: request.from,
         text: `Hi! Your request has been received and is being taken care of. - Hotel Crosby`
       })
     });
