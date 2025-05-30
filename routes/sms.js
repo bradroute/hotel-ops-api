@@ -11,6 +11,7 @@ router.post('/', async (req, res) => {
 
   const from = req.body?.data?.payload?.from?.phone_number;
   const message = req.body?.data?.payload?.text;
+  const telnyxId = req.body?.data?.payload?.id;
 
   if (from === process.env.TELNYX_NUMBER) {
   console.log('📤 Outgoing confirmation message detected — skipping insert.');
@@ -21,12 +22,17 @@ router.post('/', async (req, res) => {
     return res.status(400).send('Missing "from" or "text" field in Telnyx payload');
   }
 
+  if (message === 'Hi! Your request has been received and is being taken care of. - Hotel Crosby') {
+  console.log('📤 Outgoing confirmation message detected — skipping insert.');
+  return res.status(200).send('Confirmation message skipped');
+}
+
   // Classify message using OpenAI
   const { department, priority } = await classify(message);
 
   // Save to Supabase and return inserted row(s)
 const { data, error } = await supabase.from('HotelCrosbyRequests').insert([
-  { from, message, department, priority }
+  { from, message, department, priority, telnyx_id: telnyxId }
 ]).select(); // 👈 this is the key
 
 if (error) {
