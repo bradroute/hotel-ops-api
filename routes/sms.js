@@ -84,7 +84,7 @@ if (!data) {
       },
       body: JSON.stringify({
         from: process.env.TELNYX_NUMBER,
-        to: request.from, // Make sure this is a clean +1XXXXXXXXXX number
+        to: data.from, // Make sure this is a clean +1XXXXXXXXXX number
         text: `Hi! Your request has been received and is being taken care of. - Hotel Crosby`
       })
     });
