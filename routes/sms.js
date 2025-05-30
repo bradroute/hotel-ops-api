@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../supabaseClient');
 const classify = require('../classifier');
-const fetch = require('node-fetch'); 
+const fetch = require('node-fetch');
 
 // POST /sms — Handle incoming SMS from Telnyx
 router.post('/', async (req, res) => {
@@ -21,12 +21,7 @@ router.post('/', async (req, res) => {
 
   // Save to Supabase
   const { error } = await supabase.from('HotelCrosbyRequests').insert([
-    {
-      from,
-      message,
-      department,
-      priority
-    }
+    { from, message, department, priority }
   ]);
 
   if (error) {
@@ -40,39 +35,35 @@ router.post('/', async (req, res) => {
 // PATCH /sms/:id/acknowledge — Mark a message as acknowledged
 router.patch('/:id/acknowledge', async (req, res) => {
   const { id } = req.params;
-  console.log('🔍 Received ID:', id);
+  const trimmedId = id.toString().trim(); // force string and trim whitespace
+  console.log('🔍 Raw ID:', id);
+  console.log('🧼 Trimmed ID:', trimmedId);
 
   // Step 1: Get the request from Supabase
   const { data, error: fetchError } = await supabase
-  .from('HotelCrosbyRequests')
-  .select('*')
-  .eq('id', String(id)) // <- force it to a string just in case
-  .maybeSingle();        // <- use maybeSingle() instead of single()
+    .from('HotelCrosbyRequests')
+    .select('*')
+    .eq('id', trimmedId)
+    .maybeSingle();
 
-  // 🔍 Debugging logs
-console.log('📦 Supabase data:', data);
-console.log('❌ Fetch error (if any):', fetchError);
-
-  if (!data) {
-  console.error('❌ Request not found');
-  return res.status(404).json({ success: false, message: 'Request not found' });
-}
+  console.log('📦 Supabase data:', data);
+  console.log('❌ Fetch error (if any):', fetchError);
 
   if (fetchError) {
-  console.error('❌ Fetch error:', fetchError.message);
-  return res.status(500).json({ success: false, message: 'Fetch error' });
-}
+    console.error('❌ Fetch error:', fetchError.message);
+    return res.status(500).json({ success: false, message: 'Fetch error' });
+  }
 
-if (!data) {
-  console.error('❌ No request found for ID:', id);
-  return res.status(404).json({ success: false, message: 'Request not found' });
-}
+  if (!data) {
+    console.error('❌ Request not found for ID:', trimmedId);
+    return res.status(404).json({ success: false, message: 'Request not found' });
+  }
 
   // Step 2: Mark as acknowledged in Supabase
   const { error: updateError } = await supabase
     .from('HotelCrosbyRequests')
     .update({ acknowledged: true })
-    .eq('id', id);
+    .eq('id', trimmedId);
 
   if (updateError) {
     console.error('❌ Failed to acknowledge request:', updateError.message);
@@ -84,23 +75,23 @@ if (!data) {
     const smsResponse = await fetch('https://api.telnyx.com/v2/messages', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+        Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         from: process.env.TELNYX_NUMBER,
-        to: data.from, // Make sure this is a clean +1XXXXXXXXXX number
+        to: data.from,
         text: `Hi! Your request has been received and is being taken care of. - Hotel Crosby`
       })
     });
 
     if (!smsResponse.ok) {
-  const errorText = await smsResponse.text();
-  console.error('⚠️ SMS send failed:', errorText);
-  return res.status(500).json({ success: false, message: 'Acknowledged, but SMS failed' });
-}
+      const errorText = await smsResponse.text();
+      console.error('⚠️ SMS send failed:', errorText);
+      return res.status(500).json({ success: false, message: 'Acknowledged, but SMS failed' });
+    }
 
-    console.log(`✅ Request ${id} acknowledged & SMS sent`);
+    console.log(`✅ Request ${trimmedId} acknowledged & SMS sent`);
     return res.status(200).json({ success: true, message: 'Acknowledged and SMS sent' });
   } catch (err) {
     console.error('❌ Telnyx API error:', err.message);
