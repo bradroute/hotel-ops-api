@@ -45,8 +45,13 @@ router.patch('/:id/acknowledge', async (req, res) => {
   const { data, error: fetchError } = await supabase
   .from('HotelCrosbyRequests')
   .select('*')
-  .eq('id', id)
-  .maybeSingle();
+  .eq('id', String(id)) // <- force it to a string just in case
+  .maybeSingle();        // <- use maybeSingle() instead of single()
+
+  if (!data) {
+  console.error('❌ Request not found');
+  return res.status(404).json({ success: false, message: 'Request not found' });
+}
 
   if (fetchError) {
   console.error('❌ Fetch error:', fetchError.message);
