@@ -65,3 +65,35 @@ router.get('/by-department', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch department stats' });
   }
 });
+
+router.get('/avg-response-time', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('HotelCrosbyRequests')
+      .select('created_at, acknowledged_at')
+      .eq('acknowledged', true);
+
+    if (error) throw error;
+
+    const diffsInMinutes = data
+      .filter(row => row.created_at && row.acknowledged_at)
+      .map(row => {
+        const created = new Date(row.created_at);
+        const acknowledged = new Date(row.acknowledged_at);
+        const diffMs = acknowledged - created;
+        return diffMs / (1000 * 60); // Convert ms to minutes
+      });
+
+    const avg =
+      diffsInMinutes.length > 0
+        ? diffsInMinutes.reduce((a, b) => a + b, 0) / diffsInMinutes.length
+        : 0;
+
+    res.json({
+      average_response_time_minutes: parseFloat(avg.toFixed(2)),
+    });
+  } catch (err) {
+    console.error('❌ Error calculating average response time:', err.message);
+    res.status(500).json({ error: 'Failed to calculate average response time' });
+  }
+});
