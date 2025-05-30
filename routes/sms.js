@@ -143,3 +143,26 @@ router.patch('/:id/acknowledge', async (req, res) => {
 });
 
 module.exports = router;
+
+// PATCH /sms/:id/complete — Mark a request as completed
+router.patch('/:id/complete', async (req, res) => {
+  const { id } = req.params;
+  const trimmedId = id.toString().trim();
+
+  try {
+    const { error } = await supabase
+      .from('HotelCrosbyRequests')
+      .update({
+        completed: true,
+        completed_at: new Date().toISOString()
+      })
+      .eq('id', trimmedId);
+
+    if (error) throw error;
+
+    res.status(200).json({ success: true, message: 'Request marked as completed' });
+  } catch (err) {
+    console.error('❌ Failed to complete request:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to complete request' });
+  }
+});
