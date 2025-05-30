@@ -12,6 +12,11 @@ router.post('/', async (req, res) => {
   const from = req.body?.data?.payload?.from?.phone_number;
   const message = req.body?.data?.payload?.text;
 
+  if (from === process.env.TELNYX_NUMBER) {
+  console.log('📤 Outgoing confirmation message detected — skipping insert.');
+  return res.status(200).send('Outgoing message ignored');
+}
+
   if (!from || !message) {
     return res.status(400).send('Missing "from" or "text" field in Telnyx payload');
   }
