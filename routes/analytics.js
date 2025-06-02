@@ -42,8 +42,6 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-module.exports = router;
-
 router.get('/by-department', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -97,3 +95,22 @@ router.get('/avg-response-time', async (req, res) => {
     res.status(500).json({ error: 'Failed to calculate average response time' });
   }
 });
+
+// ✅ New: Daily average response time over the last 7 days
+router.get('/daily-response-times', async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc('get_avg_response_times_last_7_days');
+
+    if (error) {
+      console.error('❌ Error fetching daily response times:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+  } catch (err) {
+    console.error('❌ Server error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+module.exports = router;
