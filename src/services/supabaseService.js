@@ -1,15 +1,10 @@
-// src/services/supabaseService.js
+// hotel-ops-api/src/services/supabaseService.js
 
 const { createClient } = require('@supabase/supabase-js');
 const { supabaseUrl, supabaseKey } = require('../config');
 
-// Initialize Supabase client
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-/**
- * Fetch all requests, ordered by creation date descending.
- * Now wraps any Supabase error in a real Error instance.
- */
 async function getAllRequests() {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -17,21 +12,20 @@ async function getAllRequests() {
     .order('created_at', { ascending: false });
 
   if (error) {
-    // Throw a real Error with the message from Supabase
     throw new Error(error.message);
   }
   return data;
 }
 
-// The rest of your service functions can remain unchanged,
-// since Supabase errors there typically already are Error instances.
 async function insertRequest({ from, message, department, priority, telnyx_id }) {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
     .insert([{ from, message, department, priority, telnyx_id }])
     .select();
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
   return data[0];
 }
 
@@ -42,7 +36,9 @@ async function findByTelnyxId(telnyx_id) {
     .eq('telnyx_id', telnyx_id)
     .maybeSingle();
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
   return data;
 }
 
@@ -56,7 +52,9 @@ async function acknowledgeRequestById(id) {
     .eq('id', id)
     .select();
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
   return data[0];
 }
 
@@ -70,7 +68,9 @@ async function completeRequestById(id) {
     .eq('id', id)
     .select();
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
   return data[0];
 }
 
@@ -80,27 +80,37 @@ async function getAnalyticsSummary() {
   startOfToday.setHours(0, 0, 0, 0);
 
   const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay());
+  startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
   startOfWeek.setHours(0, 0, 0, 0);
 
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
+  // Run all three count‐queries in parallel
   const [todayCount, weekCount, monthCount] = await Promise.all([
     supabase
       .from('HotelCrosbyRequests')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', startOfToday.toISOString()),
-
     supabase
       .from('HotelCrosbyRequests')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', startOfWeek.toISOString()),
-
     supabase
       .from('HotelCrosbyRequests')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', startOfMonth.toISOString()),
   ]);
+
+  // Throw if any of the three calls returned an error
+  if (todayCount.error) {
+    throw new Error(todayCount.error.message);
+  }
+  if (weekCount.error) {
+    throw new Error(weekCount.error.message);
+  }
+  if (monthCount.error) {
+    throw new Error(monthCount.error.message);
+  }
 
   return {
     today: todayCount.count,
@@ -114,7 +124,9 @@ async function getAnalyticsByDepartment() {
     .from('HotelCrosbyRequests')
     .select('department');
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
 
   const result = {};
   data.forEach((row) => {
@@ -131,7 +143,9 @@ async function getAnalyticsAvgResponseTime() {
     .select('created_at, acknowledged_at')
     .eq('acknowledged', true);
 
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
 
   const diffsInMinutes = data
     .filter((row) => row.created_at && row.acknowledged_at)
@@ -151,7 +165,9 @@ async function getAnalyticsAvgResponseTime() {
 
 async function getAnalyticsDailyResponseTimes() {
   const { data, error } = await supabase.rpc('get_avg_response_times_last_7_days');
-  if (error) throw error;
+  if (error) {
+    throw new Error(error.message);
+  }
   return data;
 }
 
