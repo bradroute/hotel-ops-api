@@ -8,6 +8,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
  * Fetch all requests, ordered by creation date descending.
+ * Now wraps any Supabase error in a real Error instance.
  */
 async function getAllRequests() {
   const { data, error } = await supabase
@@ -15,14 +16,15 @@ async function getAllRequests() {
     .select('*')
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    // Throw a real Error with the message from Supabase
+    throw new Error(error.message);
+  }
   return data;
 }
 
-/**
- * Insert a new request with the given details.
- * Returns the inserted row.
- */
+// The rest of your service functions can remain unchanged,
+// since Supabase errors there typically already are Error instances.
 async function insertRequest({ from, message, department, priority, telnyx_id }) {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -33,9 +35,6 @@ async function insertRequest({ from, message, department, priority, telnyx_id })
   return data[0];
 }
 
-/**
- * Lookup a request by its Telnyx ID (to avoid duplicates).
- */
 async function findByTelnyxId(telnyx_id) {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -44,13 +43,9 @@ async function findByTelnyxId(telnyx_id) {
     .maybeSingle();
 
   if (error) throw error;
-  return data; // either null or { id: ... }
+  return data;
 }
 
-/**
- * Mark a request as acknowledged, setting acknowledged=true and acknowledged_at timestamp.
- * Returns the updated row.
- */
 async function acknowledgeRequestById(id) {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -65,10 +60,6 @@ async function acknowledgeRequestById(id) {
   return data[0];
 }
 
-/**
- * Mark a request as completed, setting completed=true and completed_at timestamp.
- * Returns the updated row.
- */
 async function completeRequestById(id) {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -83,16 +74,13 @@ async function completeRequestById(id) {
   return data[0];
 }
 
-/**
- * Get analytics summary: counts of today/this week/this month.
- */
 async function getAnalyticsSummary() {
   const now = new Date();
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
 
   const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
+  startOfWeek.setDate(now.getDate() - now.getDay());
   startOfWeek.setHours(0, 0, 0, 0);
 
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -121,9 +109,6 @@ async function getAnalyticsSummary() {
   };
 }
 
-/**
- * Get counts by department.
- */
 async function getAnalyticsByDepartment() {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -140,9 +125,6 @@ async function getAnalyticsByDepartment() {
   return result;
 }
 
-/**
- * Get average response time (in minutes) for all acknowledged requests.
- */
 async function getAnalyticsAvgResponseTime() {
   const { data, error } = await supabase
     .from('HotelCrosbyRequests')
@@ -167,9 +149,6 @@ async function getAnalyticsAvgResponseTime() {
   return { average_response_time_minutes: parseFloat(avg.toFixed(2)) };
 }
 
-/**
- * Get daily average response times for the past 7 days via a Supabase RPC.
- */
 async function getAnalyticsDailyResponseTimes() {
   const { data, error } = await supabase.rpc('get_avg_response_times_last_7_days');
   if (error) throw error;
