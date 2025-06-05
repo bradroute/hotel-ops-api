@@ -1,0 +1,32 @@
+# .github/workflows/backend.yml
+
+name: Backend CI
+
+# Trigger on pushes (you can add pull_request as well if desired)
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1) Check out the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2) Use Node.js (v18, matching your local/node versions)
+      - name: Use Node.js 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      # 3) Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # 4) Run the test suite
+      - name: Run tests
+        run: npm test
