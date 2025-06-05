@@ -7,11 +7,17 @@ console.log('[DEBUG] src/index.js – starting up');
 require('dotenv').config();
 
 // C) Import the Express app from app.js
-//    If this fails (e.g., syntax error in app.js),
-//    we will not see the next debug message.
 console.log('[DEBUG] src/index.js – about to require(\'./app\')');
 const app = require('./app');
 console.log('[DEBUG] src/index.js – required app successfully');
+
+// ─────────────────────────────────────────────────────────────
+//  Add your /health endpoint here, before calling app.listen
+// ─────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+// ─────────────────────────────────────────────────────────────
 
 // D) Choose a port (use PORT env variable if set, otherwise default to 3001)
 const PORT = process.env.PORT || 3001;
