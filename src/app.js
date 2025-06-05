@@ -12,6 +12,12 @@ const analyticsRouter = require('./routes/analytics');
 
 const app = express();
 
+// ─── Health check ───────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+// ─────────────────────────────────────────────────────────────────────────
+
 app.use(cors());
 app.use(express.json());
 
