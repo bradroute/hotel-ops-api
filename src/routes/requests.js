@@ -10,7 +10,7 @@ const supabase = createClient(
 
 const router = express.Router();
 
-// GET /requests → return all requests
+// GET /requests → return all requests with “from_phone” aliased to “from”
 router.get('/', async (req, res, next) => {
   try {
     const { data, error } = await supabase
@@ -21,7 +21,19 @@ router.get('/', async (req, res, next) => {
     if (error) {
       throw error;
     }
-    res.json(data);
+
+    const formatted = data.map((row) => ({
+      id: row.id,
+      from: row.from_phone,
+      department: row.department,
+      priority: row.priority,
+      message: row.message,
+      created_at: row.created_at,
+      acknowledged: row.acknowledged,
+      completed: row.completed,
+    }));
+
+    return res.json(formatted);
   } catch (err) {
     next(err);
   }
@@ -42,7 +54,7 @@ router.post('/:id/acknowledge', async (req, res, next) => {
 
     // (Optional) Send an SMS here if you want, using your Telnyx logic
 
-    res.json({ success: true, updated: data });
+    return res.json({ success: true, updated: data });
   } catch (err) {
     next(err);
   }
@@ -59,7 +71,7 @@ router.post('/:id/complete', async (req, res, next) => {
       .single();
 
     if (error) throw error;
-    res.json({ success: true, updated: data });
+    return res.json({ success: true, updated: data });
   } catch (err) {
     next(err);
   }
