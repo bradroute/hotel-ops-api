@@ -1,29 +1,27 @@
 // src/index.js
 
-// A) Debug log at the very top
+// Debug log
 console.log('[DEBUG] src/index.js – starting up');
 
-// B) Load environment variables from /.env
+// Load env vars
 require('dotenv').config();
 
-// C) Import the Express app from app.js
+// Import Express app
 console.log('[DEBUG] src/index.js – about to require(\'./app\')');
 const app = require('./app');
 console.log('[DEBUG] src/index.js – required app successfully');
 
-// ─────────────────────────────────────────────────────────────
-//  Add your /health endpoint here, before calling app.listen
-// ─────────────────────────────────────────────────────────────
+// ─── Health check ───────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
 
-// D) Choose a port (use PORT env variable if set, otherwise default to 3001)
+// Choose port (Render sets PORT=10000 internally)
 const PORT = process.env.PORT || 3001;
 
-// E) Start listening
+// Start listening
 app.listen(PORT, () => {
-  console.log(`[DEBUG] src/index.js – app.listen callback fired`);
+  console.log('[DEBUG] src/index.js – app.listen callback fired');
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
 });
