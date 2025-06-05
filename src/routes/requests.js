@@ -10,7 +10,7 @@ const supabase = createClient(
 
 const router = express.Router();
 
-// GET /requests → return all requests with “from_phone” aliased to “from”
+// GET /requests → return all requests with `from` taken directly from the column
 router.get('/', async (req, res, next) => {
   try {
     const { data, error } = await supabase
@@ -22,9 +22,10 @@ router.get('/', async (req, res, next) => {
       throw error;
     }
 
+    // Since your table column is named "from", just pass it along:
     const formatted = data.map((row) => ({
       id: row.id,
-      from: row.from_phone,
+      from: row.from,           // <-- use row.from, not row.from_phone
       department: row.department,
       priority: row.priority,
       message: row.message,
@@ -39,11 +40,10 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// POST /requests/:id/acknowledge → set acknowledged=true and send SMS, etc.
+// POST /requests/:id/acknowledge → set acknowledged=true
 router.post('/:id/acknowledge', async (req, res, next) => {
   const id = parseInt(req.params.id, 10);
   try {
-    // Update the “acknowledged” flag in Supabase
     const { data, error } = await supabase
       .from('requests')
       .update({ acknowledged: true })
@@ -51,9 +51,6 @@ router.post('/:id/acknowledge', async (req, res, next) => {
       .single();
 
     if (error) throw error;
-
-    // (Optional) Send an SMS here if you want, using your Telnyx logic
-
     return res.json({ success: true, updated: data });
   } catch (err) {
     next(err);
