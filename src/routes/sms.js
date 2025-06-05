@@ -98,10 +98,14 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
+    // Log before sending SMS
+    console.log(`🔔 About to send confirmation SMS to ${updated.from}`);
+
     // Send a confirmation SMS via Telnyx
     let smsResult = null;
     try {
       smsResult = await sendConfirmationSms(updated.from);
+      console.log('📨 telnyxService: Telnyx response:', smsResult);
     } catch (err) {
       console.error(`❌ Failed to send confirmation SMS for request ${trimmedId}:`, err);
     }
