@@ -1,19 +1,26 @@
 // src/services/telnyxService.js
 
 // NOTE: No `require('node-fetch')`—we'll use Node 18+'s built-in fetch instead
-// If your Node version is older than v18, update to at least v18 or install "node-fetch@2".
 
 const { telnyxApiKey, telnyxNumber } = require('../config');
 
 /**
  * Send a confirmation SMS via Telnyx.
- * @param {string} destinationNumber E.164‐formatted phone number (e.g. "+16513459559")
+ * @param {string|object} destinationNumber E.164‐formatted phone number or object containing phone_number property
  * @returns {object} Telnyx API JSON response
  */
 async function sendConfirmationSms(destinationNumber) {
+  // Ensure destinationNumber is a string; if it's an object, extract the phone_number property
+  const toNumber =
+    typeof destinationNumber === 'string'
+      ? destinationNumber
+      : destinationNumber?.phone_number || String(destinationNumber);
+
+  console.log('📨 telnyxService: sending from', telnyxNumber, 'to', toNumber);
+
   const smsPayload = {
     from: telnyxNumber,
-    to: destinationNumber,
+    to: toNumber,
     text: 'Hi! Your request has been received and is being taken care of. - Hotel Crosby',
   };
 
@@ -31,8 +38,11 @@ async function sendConfirmationSms(destinationNumber) {
   if (!response.ok) {
     const err = new Error('Telnyx send failed');
     err.payload = data;
+    console.error('❌ telnyxService: error response:', data);
     throw err;
   }
+
+  console.log('📨 telnyxService: Telnyx response:', data);
   return data;
 }
 
