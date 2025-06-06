@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const { asyncWrapper } = require('./utils/asyncWrapper');
 const { errorHandler } = require('./middleware/errorHandler');
+const rateLimit = require('express-rate-limit');
 
 // Import all routers
 const requestsRouter = require('./routes/requests');
@@ -24,8 +25,15 @@ app.use(express.json());
 // Mount the new requestsRouter
 app.use('/requests', requestsRouter);
 
-// Existing routers
-app.use('/sms', smsRouter);
+// Rate limiter for /sms: max 10 requests per minute per IP
+const smsLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10,
+  message: 'Too many SMS requests from this IP, please try again in a minute.',
+});
+app.use('/sms', smsLimiter, smsRouter);
+
+// Existing analytics router
 app.use('/analytics', analyticsRouter);
 
 // 404 handler
