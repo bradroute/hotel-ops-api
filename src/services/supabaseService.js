@@ -3,24 +3,44 @@
 const { createClient } = require('@supabase/supabase-js');
 const { supabaseUrl, supabaseKey } = require('../config');
 
+// Initialize the Supabase client
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-async function getAllRequests() {
-  const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
+/**
+ * Fetch all requests, optionally scoped to a hotel_id
+ * @param {string} [hotelId] - UUID of the hotel to filter by
+ */
+async function getAllRequests(hotelId) {
+  let query = supabase
+    .from('requests')
     .select('*')
     .order('created_at', { ascending: false });
 
+  if (hotelId) {
+    query = query.eq('hotel_id', hotelId);
+  }
+
+  const { data, error } = await query;
   if (error) {
     throw new Error(error.message);
   }
   return data;
 }
 
-async function insertRequest({ from, message, department, priority, telnyx_id }) {
+/**
+ * Insert a new request, scoped to a hotel
+ * @param {object} params
+ * @param {string} params.hotel_id
+ * @param {string} params.from
+ * @param {string} params.message
+ * @param {string} params.department
+ * @param {string} params.priority
+ * @param {string} params.telnyx_id
+ */
+async function insertRequest({ hotel_id, from, message, department, priority, telnyx_id }) {
   const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
-    .insert([{ from, message, department, priority, telnyx_id }])
+    .from('requests')
+    .insert([{ hotel_id, from, message, department, priority, telnyx_id }])
     .select();
 
   if (error) {
@@ -29,9 +49,13 @@ async function insertRequest({ from, message, department, priority, telnyx_id })
   return data[0];
 }
 
+/**
+ * Find a request by its Telnyx message ID
+ * @param {string} telnyx_id
+ */
 async function findByTelnyxId(telnyx_id) {
   const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
+    .from('requests')
     .select('id')
     .eq('telnyx_id', telnyx_id)
     .maybeSingle();
@@ -42,9 +66,13 @@ async function findByTelnyxId(telnyx_id) {
   return data;
 }
 
+/**
+ * Mark a request as acknowledged
+ * @param {string} id
+ */
 async function acknowledgeRequestById(id) {
   const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
+    .from('requests')
     .update({
       acknowledged: true,
       acknowledged_at: new Date().toISOString(),
@@ -58,9 +86,13 @@ async function acknowledgeRequestById(id) {
   return data[0];
 }
 
+/**
+ * Mark a request as completed
+ * @param {string} id
+ */
 async function completeRequestById(id) {
   const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
+    .from('requests')
     .update({
       completed: true,
       completed_at: new Date().toISOString(),
@@ -74,72 +106,68 @@ async function completeRequestById(id) {
   return data[0];
 }
 
+/**
+ * Get summary analytics (counts) for all time buckets
+ */
 async function getAnalyticsSummary() {
   const now = new Date();
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-
+  const startOfToday = new Date(now.setHours(0, 0, 0, 0));
   const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
+  startOfWeek.setDate(now.getDate() - now.getDay());
   startOfWeek.setHours(0, 0, 0, 0);
-
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  // Run all three count‐queries in parallel
   const [todayCount, weekCount, monthCount] = await Promise.all([
     supabase
-      .from('HotelCrosbyRequests')
+      .from('requests')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', startOfToday.toISOString()),
     supabase
-      .from('HotelCrosbyRequests')
+      .from('requests')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', startOfWeek.toISOString()),
     supabase
-      .from('HotelCrosbyRequests')
+      .from('requests')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', startOfMonth.toISOString()),
   ]);
 
-  // Throw if any of the three calls returned an error
-  if (todayCount.error) {
-    throw new Error(todayCount.error.message);
-  }
-  if (weekCount.error) {
-    throw new Error(weekCount.error.message);
-  }
-  if (monthCount.error) {
-    throw new Error(monthCount.error.message);
-  }
+  if (todayCount.error) throw new Error(todayCount.error.message);
+  if (weekCount.error)  throw new Error(weekCount.error.message);
+  if (monthCount.error) throw new Error(monthCount.error.message);
 
   return {
-    today: todayCount.count,
-    this_week: weekCount.count,
+    today:      todayCount.count,
+    this_week:  weekCount.count,
     this_month: monthCount.count,
   };
 }
 
+/**
+ * Get count of requests grouped by department
+ */
 async function getAnalyticsByDepartment() {
   const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
+    .from('requests')
     .select('department');
 
   if (error) {
     throw new Error(error.message);
   }
 
-  const result = {};
-  data.forEach((row) => {
+  return data.reduce((acc, row) => {
     const dept = row.department || 'unknown';
-    result[dept] = (result[dept] || 0) + 1;
-  });
-
-  return result;
+    acc[dept] = (acc[dept] || 0) + 1;
+    return acc;
+  }, {});
 }
 
+/**
+ * Get average response time (request → acknowledged) in minutes
+ */
 async function getAnalyticsAvgResponseTime() {
   const { data, error } = await supabase
-    .from('HotelCrosbyRequests')
+    .from('requests')
     .select('created_at, acknowledged_at')
     .eq('acknowledged', true);
 
@@ -147,22 +175,20 @@ async function getAnalyticsAvgResponseTime() {
     throw new Error(error.message);
   }
 
-  const diffsInMinutes = data
-    .filter((row) => row.created_at && row.acknowledged_at)
-    .map((row) => {
-      const created = new Date(row.created_at);
-      const acked = new Date(row.acknowledged_at);
-      return (acked - created) / (1000 * 60);
-    });
+  const diffs = data
+    .filter((r) => r.created_at && r.acknowledged_at)
+    .map((r) => (new Date(r.acknowledged_at) - new Date(r.created_at)) / 60000);
 
-  const avg =
-    diffsInMinutes.length > 0
-      ? diffsInMinutes.reduce((a, b) => a + b, 0) / diffsInMinutes.length
-      : 0;
+  const avg = diffs.length
+    ? diffs.reduce((sum, d) => sum + d, 0) / diffs.length
+    : 0;
 
   return { average_response_time_minutes: parseFloat(avg.toFixed(2)) };
 }
 
+/**
+ * RPC to get daily avg response times for the last 7 days
+ */
 async function getAnalyticsDailyResponseTimes() {
   const { data, error } = await supabase.rpc('get_avg_response_times_last_7_days');
   if (error) {
@@ -172,6 +198,7 @@ async function getAnalyticsDailyResponseTimes() {
 }
 
 module.exports = {
+  supabase,
   getAllRequests,
   insertRequest,
   findByTelnyxId,
