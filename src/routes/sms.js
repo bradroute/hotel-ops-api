@@ -18,7 +18,10 @@ const classify                = require('../classifier');
 
 // POST /sms — Handle incoming SMS from Telnyx
 router.post('/', async (req, res) => {
+  // 🔍 Log the raw incoming payload so we can inspect its shape
+  console.log('🔍 Incoming webhook body:', JSON.stringify(req.body, null, 2));
   console.log('✅ POST /sms route hit');
+
   try {
     const payload = req.body?.data?.payload || {};
     const from    = payload.from?.phone_number;
@@ -32,9 +35,10 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: missing fields');
     }
 
-    // Skip outgoing and duplicate messages
-    if (from === process.env.TELNYX_NUMBER ||
-        message === 'Hi! Your request has been received and is being taken care of. - Hotel Crosby'
+    // Skip outgoing & duplicate messages
+    if (
+      from === process.env.TELNYX_NUMBER ||
+      message === 'Hi! Your request has been received and is being taken care of. - Hotel Crosby'
     ) {
       console.log('📤 Outgoing/confirmation message — skipping.');
       return res.status(200).send('Ignored: outgoing confirmation');
@@ -45,7 +49,7 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: duplicate');
     }
 
-    // 🔍 1) Lookup hotel by its phone_number (To)
+    // 🔍 Lookup hotel by its phone_number (To)
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
@@ -58,7 +62,7 @@ router.post('/', async (req, res) => {
     }
     const hotelId = hotel.id;
 
-    // 🤖 2) Classify department & priority
+    // 🤖 Classify department & priority
     let department = 'General', priority = 'Normal';
     try {
       const c = await classify(message);
@@ -68,7 +72,7 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ Classification failed, defaulting to General/Normal', err);
     }
 
-    // 💾 3) Insert scoped by hotel_id
+    // 💾 Insert scoped by hotel_id
     const inserted = await insertRequest({
       hotel_id:   hotelId,
       from,
@@ -83,6 +87,7 @@ router.post('/', async (req, res) => {
     console.error('❌ Error in POST /sms:', err);
     // always respond 200 so Telnyx considers it delivered
   }
+
   return res.status(200).json({ success: true });
 });
 
