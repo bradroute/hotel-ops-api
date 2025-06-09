@@ -24,21 +24,21 @@ router.post('/', async (req, res) => {
     const payload = req.body?.data?.payload || {};
 
     // Extract inbound numbers & text
-    const from_number = payload.from?.phone_number;
-    const toArray     = payload.to;
-    const to          = Array.isArray(toArray) && toArray[0]?.phone_number;
-    const message     = payload.text;
-    const telnyxId    = payload.id;
+    const from_phone = payload.from?.phone_number;
+    const toArray    = payload.to;
+    const to         = Array.isArray(toArray) && toArray[0]?.phone_number;
+    const message    = payload.text;
+    const telnyxId   = payload.id;
 
     // Validate
-    if (!from_number || !to || !message) {
-      console.log('⚠️ Missing from/to/text — skipping.');
+    if (!from_phone || !to || !message) {
+      console.log('⚠️ Missing from_phone/to/text — skipping.');
       return res.status(200).send('Ignored: missing fields');
     }
 
     // Skip outgoing confirmations
     if (
-      from_number === process.env.TELNYX_NUMBER ||
+      from_phone === process.env.TELNYX_NUMBER ||
       message === 'Hi! Your request has been received and is being taken care of. - Hotel Crosby'
     ) {
       console.log('📤 Outgoing/confirmation message — skipping.');
@@ -77,7 +77,7 @@ router.post('/', async (req, res) => {
     // Insert request scoped to hotel_id
     const inserted = await insertRequest({
       hotel_id,
-      from_number,
+      from_phone,
       message,
       department,
       priority,
@@ -100,16 +100,18 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     const updated = await acknowledgeRequestById(id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
-    console.log(`🔔 Sending confirmation SMS to ${updated.from_number}`);
+    console.log(`🔔 Sending confirmation SMS to ${updated.from_phone}`);
     let smsResult = null;
     try {
-      smsResult = await sendConfirmationSms(updated.from_number);
+      smsResult = await sendConfirmationSms(updated.from_phone);
       console.log('📨 Telnyx response:', smsResult);
     } catch (err) {
       console.error(`❌ SMS send failed for request ${id}:`, err);
     }
 
-    return res.status(200).json({ success: true, message: 'Acknowledged', telnyx: smsResult });
+    return res
+      .status(200)
+      .json({ success: true, message: 'Acknowledged', telnyx: smsResult });
   } catch (err) {
     next(err);
   }

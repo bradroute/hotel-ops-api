@@ -8,8 +8,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
  * Fetch all requests, optionally scoped to a specific hotel.
- * @param {string} [hotelId]
- * @returns {Promise<Array>}
  */
 async function getAllRequests(hotelId) {
   let query = supabase
@@ -29,10 +27,10 @@ async function getAllRequests(hotelId) {
 /**
  * Insert a new request for a given hotel.
  */
-async function insertRequest({ hotel_id, from_number, message, department, priority, telnyx_id }) {
+async function insertRequest({ hotel_id, from_phone, message, department, priority, telnyx_id }) {
   const { data, error } = await supabase
     .from('requests')
-    .insert([{ hotel_id, from_number, message, department, priority, telnyx_id }])
+    .insert([{ hotel_id, from_phone, message, department, priority, telnyx_id }])
     .select();
 
   if (error) throw new Error(error.message);
@@ -162,4 +160,3 @@ module.exports = {
   getAnalyticsAvgResponseTime,
   getAnalyticsDailyResponseTimes,
 };
-
