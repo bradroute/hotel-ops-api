@@ -1,10 +1,15 @@
-const { OpenAI } = require('openai');
+// src/services/classifier.js
+import { OpenAI } from 'openai';
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-async function classify(text) {
+/**
+ * Given a free-form message, returns an object
+ * { department: string, priority: string }
+ */
+export async function classify(text) {
   const prompt = `You are a hotel task classifier. Given the message below, return JSON with two fields: "department" and "priority".
 
-Departments: housekeeping, maintenance, front desk, valet, room service
+Departments: Housekeeping, Maintenance, Front Desk, Valet, Room Service  
 Priorities: urgent, normal, low
 
 Message: "${text}"`;
@@ -21,8 +26,6 @@ Message: "${text}"`;
     return { department, priority };
   } catch (e) {
     console.error('Classification failed:', e);
-    return { department: 'front desk', priority: 'normal' }; // fallback
+    return { department: 'Front Desk', priority: 'normal' };
   }
 }
-
-module.exports = classify;

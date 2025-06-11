@@ -3,50 +3,62 @@ require('dotenv').config();
 const express     = require('express');
 const cors        = require('cors');
 const rateLimit   = require('express-rate-limit');
-const { asyncWrapper }   = require('./utils/asyncWrapper');
-const { errorHandler }   = require('./middleware/errorHandler');
+const { errorHandler } = require('./middleware/errorHandler');
 
-// Import all routers
-const requestsRouter   = require('./routes/requests');
-const smsRouter        = require('./routes/sms');
-const analyticsRouter  = require('./routes/analytics');
+// Routers
+const requestsRouterRaw  = require('./routes/requests');
+const smsRouterRaw       = require('./routes/sms');
+const analyticsRouterRaw = require('./routes/analytics');
+const webformRouterRaw   = require('./routes/webform');
+
+// Helper to unwrap default exports if present
+function unwrap(m) {
+  return (m && m.default) ? m.default : m;
+}
+
+// Unwrapped routers
+const requestsRouter  = unwrap(requestsRouterRaw);
+const smsRouter       = unwrap(smsRouterRaw);
+const analyticsRouter = unwrap(analyticsRouterRaw);
+const webformRouter   = unwrap(webformRouterRaw);
 
 const app = express();
 
-// ─── Trust Proxy ───────────────────────────────────────────────────────
-// This lets express-rate-limit correctly read X-Forwarded-For on Render
+// Trust proxy (for Render, etc)
 app.set('trust proxy', 1);
 
-// ─── Health check ───────────────────────────────────────────────────
+// Health check
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.json({ status: 'ok' });
 });
-// ─────────────────────────────────────────────────────────────────────
 
-// CORS & body parsing
+// Global middleware
 app.use(cors());
 app.use(express.json());
 
-// Mount the requests router
+// 1️⃣ Requests API
 app.use('/requests', requestsRouter);
 
-// ─── SMS Webhook with rate limiter & raw-body logging ────────────────
-// First, log the incoming payload so we can see exactly what Telnyx is sending
-app.use('/sms', (req, res, next) => {
-  console.log('🔍 Incoming /sms payload:', JSON.stringify(req.body, null, 2));
-  next();
-});
+// 2️⃣ SMS webhook
+app.use(
+  '/sms',
+  (req, res, next) => {
+    console.log('🔍 Incoming /sms payload:', JSON.stringify(req.body, null, 2));
+    next();
+  },
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    message: 'Too many SMS requests; try again later.',
+  }),
+  smsRouter
+);
 
-// Then apply rate limiting
-const smsLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 10,
-  message: 'Too many SMS requests from this IP, please try again in a minute.',
-});
-app.use('/sms', smsLimiter, smsRouter);
-
-// Mount the analytics router
+// 3️⃣ Analytics API
 app.use('/analytics', analyticsRouter);
+
+// 4️⃣ Webform endpoint
+app.use('/api/webform', webformRouter);
 
 // 404 handler
 app.use((req, res) => {

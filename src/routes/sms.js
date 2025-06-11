@@ -1,19 +1,18 @@
 // src/routes/sms.js
+import express from 'express';
+const router = express.Router();
 
-const express = require('express');
-const router  = express.Router();
-
-const {
+import {
   supabase,
   insertRequest,
   findByTelnyxId,
   acknowledgeRequestById,
   completeRequestById,
   getAllRequests,
-} = require('../services/supabaseService');
+} from '../services/supabaseService.js';
 
-const { sendConfirmationSms } = require('../services/telnyxService');
-const classify                = require('../classifier');
+import { sendConfirmationSms } from '../services/telnyxService.js';
+import { classify } from '../services/classifier.js';
 
 // POST /sms — Handle incoming SMS from Telnyx
 router.post('/', async (req, res) => {
@@ -25,10 +24,10 @@ router.post('/', async (req, res) => {
 
     // Extract inbound numbers & text
     const from_phone = payload.from?.phone_number;
-    const toArray    = payload.to;
-    const to         = Array.isArray(toArray) && toArray[0]?.phone_number;
-    const message    = payload.text;
-    const telnyxId   = payload.id;
+    const toArray = payload.to;
+    const to = Array.isArray(toArray) && toArray[0]?.phone_number;
+    const message = payload.text;
+    const telnyxId = payload.id;
 
     // Validate
     if (!from_phone || !to || !message) {
@@ -69,7 +68,7 @@ router.post('/', async (req, res) => {
     try {
       const c = await classify(message);
       department = c.department;
-      priority   = c.priority;
+      priority = c.priority;
     } catch (err) {
       console.warn('⚠️ Classification failed, defaulting to General/Normal', err);
     }
@@ -96,7 +95,7 @@ router.post('/', async (req, res) => {
 // PATCH /sms/:id/acknowledge — Acknowledge & send confirmation SMS
 router.patch('/:id/acknowledge', async (req, res, next) => {
   try {
-    const id      = req.params.id.trim();
+    const id = req.params.id.trim();
     const updated = await acknowledgeRequestById(id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
@@ -120,7 +119,7 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
 // PATCH /sms/:id/complete — Mark completed
 router.patch('/:id/complete', async (req, res, next) => {
   try {
-    const id      = req.params.id.trim();
+    const id = req.params.id.trim();
     const updated = await completeRequestById(id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
     return res.status(200).json({ success: true, message: 'Request marked as completed' });
@@ -139,4 +138,4 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-module.exports = router;
+export default router;
