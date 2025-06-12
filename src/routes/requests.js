@@ -1,48 +1,68 @@
+// src/routes/requests.js
+
 import express from 'express';
-import { supabase } from '../services/supabaseService.js';
+import {
+  getAllRequests,
+  acknowledgeRequestById,
+  completeRequestById,
+  getNotesByRequestId,
+  addNoteToRequest,
+} from '../services/supabaseService.js';
+
 const router = express.Router();
 
+// List all requests (optionally filter by hotel_id query param)
 router.get('/', async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('requests')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
+    const hotelId = req.query.hotel_id;
+    const data = await getAllRequests(hotelId);
     res.json(data);
   } catch (err) {
     next(err);
   }
 });
 
+// Acknowledge a request
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
-    const id = req.params.id;
-    const { data, error } = await supabase
-      .from('requests')
-      .update({ acknowledged: true, acknowledged_at: new Date().toISOString() })
-      .eq('id', id)
-      .select();
-
-    if (error) throw error;
-    res.json({ success: true, updated: data[0] });
+    const updated = await acknowledgeRequestById(req.params.id);
+    res.json({ success: true, updated });
   } catch (err) {
     next(err);
   }
 });
 
+// Complete a request
 router.post('/:id/complete', async (req, res, next) => {
   try {
-    const id = req.params.id;
-    const { data, error } = await supabase
-      .from('requests')
-      .update({ completed: true, completed_at: new Date().toISOString() })
-      .eq('id', id)
-      .select();
+    const updated = await completeRequestById(req.params.id);
+    res.json({ success: true, updated });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    if (error) throw error;
-    res.json({ success: true, updated: data[0] });
+// ── Notes Endpoints ──────────────────────────────────────────────────────────
+
+// Get notes array for a request
+router.get('/:id/notes', async (req, res, next) => {
+  try {
+    const notes = await getNotesByRequestId(req.params.id);
+    res.json(notes);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Add a note to a request
+router.post('/:id/notes', async (req, res, next) => {
+  try {
+    const { content } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: 'Note content is required.' });
+    }
+    const notes = await addNoteToRequest(req.params.id, content);
+    res.json({ success: true, notes });
   } catch (err) {
     next(err);
   }

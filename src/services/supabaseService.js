@@ -1,3 +1,5 @@
+// src/services/supabaseService.js
+
 // Stub global WebSocket before any supabase code runs
 import ws from 'isomorphic-ws';
 if (typeof globalThis.WebSocket === 'undefined') {
@@ -10,13 +12,16 @@ import { supabaseUrl, supabaseKey } from '../config/index.js';
 export const supabase = createClient(
   supabaseUrl,
   supabaseKey,
-  { realtime: { enabled: false } }  // disable realtime to avoid WebSocket requirement
+  { realtime: { enabled: false } }
 );
 
 // ── Requests CRUD ────────────────────────────────────────────────────────────
 
 export async function getAllRequests(hotelId) {
-  let q = supabase.from('requests').select('*').order('created_at', { ascending: false });
+  let q = supabase
+    .from('requests')
+    .select('*')
+    .order('created_at', { ascending: false });
   if (hotelId) q = q.eq('hotel_id', hotelId);
   const { data, error } = await q;
   if (error) throw new Error(error.message);
@@ -62,7 +67,40 @@ export async function completeRequestById(id) {
   return data[0];
 }
 
-// ── Analytics ────────────────────────────────────────────────────────────────
+// ── Notes Thread ─────────────────────────────────────────────────────────────
+
+/**
+ * Get the current notes (text[]) for a given request ID.
+ */
+export async function getNotesByRequestId(requestId) {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('notes')
+    .eq('id', requestId)
+    .single();
+  if (error) throw new Error(error.message);
+  return data.notes || [];
+}
+
+/**
+ * Append a new note to the notes array for a request.
+ * Returns the updated notes array.
+ */
+export async function addNoteToRequest(requestId, content) {
+  // fetch existing
+  const existing = await getNotesByRequestId(requestId);
+  const updated = [...existing, content];
+
+  const { data, error } = await supabase
+    .from('requests')
+    .update({ notes: updated })
+    .eq('id', requestId)
+    .select('notes');
+  if (error) throw new Error(error.message);
+  return data[0].notes;
+}
+
+// ── Analytics (unchanged) ─────────────────────────────────────────────────────
 
 export async function getAnalyticsSummary() {
   const now = new Date();
