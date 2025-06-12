@@ -1,18 +1,20 @@
-require('dotenv').config();
+import dotenv from 'dotenv';
+dotenv.config();
 
-// 👉 WebSocket polyfill for Supabase realtime inside worker:
+// Polyfill WebSocket (Supabase realtime needs this on server-side Node)
 if (typeof global.WebSocket === 'undefined') {
-  global.WebSocket = require('ws');
+  const wsImport = await import('ws');
+  global.WebSocket = wsImport.default;
 }
 
-const ackReminderWorker = require('./ackReminderWorker');
-const escalationWorker = require('./escalationWorker');
+import { start as startAckReminderWorker } from './ackReminderWorker.js';
+import { start as startEscalationWorker } from './escalationWorker.js';
 
 function startWorkers() {
   console.log('🚀 Starting HotelOps workers...');
 
-  ackReminderWorker.start();
-  escalationWorker.start();
+  startAckReminderWorker();
+  startEscalationWorker();
 }
 
 startWorkers();
