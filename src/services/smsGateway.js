@@ -7,9 +7,8 @@ export async function sendSms(to, message, context = 'General') {
     console.log(`[DRY RUN SMS] (${context}) To: ${to} | Message: "${message}"`);
     return;
   }
-
   try {
-    const result = await sendConfirmationSms(to, message);
+    const result = await sendConfirmationSms(to);
     console.log(`[REAL SMS SENT] (${context}) To: ${to} | Telnyx result:`, result);
     return result;
   } catch (err) {

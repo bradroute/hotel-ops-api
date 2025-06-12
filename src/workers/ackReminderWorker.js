@@ -1,20 +1,15 @@
 import 'dotenv/config';
 import { supabase } from '../services/supabaseService.js';
-import { sendSms }  from '../services/smsGateway.js';
+import { sendSms } from '../services/smsGateway.js';
 
 const REMINDER_THRESHOLD_MINUTES = 15;
-const MANAGER_PHONE = process.env.MANAGER_PHONE || '+11234567890';
-
-async function sendReminder(to, requestId) {
-  const message = `Reminder: You have a request (ID ${requestId}) waiting for acknowledgment.`;
-  await sendSms(to, message, 'Reminder');
-}
+const MANAGER_PHONE = process.env.MANAGER_PHONE;
 
 async function checkUnacknowledgedRequests() {
   console.log('🔍 Checking for unacknowledged requests...');
-  const cutoff = new Date(Date.now() - REMINDER_THRESHOLD_MINUTES * 60 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - REMINDER_THRESHOLD_MINUTES * 60000).toISOString();
 
-  const { data: requests, error } = await supabase
+  const { data: reqs, error } = await supabase
     .from('requests')
     .select('*')
     .is('acknowledged_at', null)
@@ -25,9 +20,9 @@ async function checkUnacknowledgedRequests() {
     return;
   }
 
-  for (const req of requests) {
-    console.log(`📣 Found unacknowledged request ID ${req.id} older than ${REMINDER_THRESHOLD_MINUTES} min`);
-    await sendReminder(MANAGER_PHONE, req.id);
+  for (const r of reqs) {
+    console.log(`📣 Found request ${r.id} older than ${REMINDER_THRESHOLD_MINUTES}m`);
+    await sendSms(MANAGER_PHONE, `Reminder: You have a request (ID ${r.id}) waiting for acknowledgment.`, 'Reminder');
   }
 
   console.log('✅ Reminder check complete.');
