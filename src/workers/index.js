@@ -1,21 +1,18 @@
-// src/workers/index.js
+require('dotenv').config();
 
-import dotenv from 'dotenv';
-dotenv.config();
-
-// WebSocket polyfill (ESM-safe)
+// 👉 WebSocket polyfill for Supabase realtime inside worker:
 if (typeof global.WebSocket === 'undefined') {
-  const ws = await import('ws');
-  global.WebSocket = ws.default;
+  global.WebSocket = require('ws');
 }
 
-import { start as startAckReminderWorker } from './ackReminderWorker.js';
-import { start as startEscalationWorker } from './escalationWorker.js';
+const ackReminderWorker = require('./ackReminderWorker');
+const escalationWorker = require('./escalationWorker');
 
 function startWorkers() {
   console.log('🚀 Starting HotelOps workers...');
-  startAckReminderWorker();
-  startEscalationWorker();
+
+  ackReminderWorker.start();
+  escalationWorker.start();
 }
 
 startWorkers();
