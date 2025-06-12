@@ -1,16 +1,14 @@
-import ws from 'ws';
-global.WebSocket = ws;
-
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { start as startAckReminderWorker } from './ackReminderWorker.js';
-import { start as startEscalationWorker } from './escalationWorker.js';
+// Polyfill for any leftover WebSocket usage
+import { WebSocket } from 'ws';
+global.WebSocket = WebSocket;
 
-function startWorkers() {
-  console.log('🚀 Starting HotelOps workers...');
-  startAckReminderWorker();
-  startEscalationWorker();
-}
+import { start as startAckReminder } from './ackReminderWorker.js';
+import { start as startEscalation   } from './escalationWorker.js';
 
-startWorkers();
+console.log('🚀 Starting HotelOps workers...');
+startAckReminder();
+startEscalation();
+

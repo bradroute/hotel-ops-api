@@ -1,5 +1,6 @@
+import 'dotenv/config';
 import { supabase } from '../services/supabaseService.js';
-import { sendSms } from '../services/smsGateway.js';
+import { sendSms }  from '../services/smsGateway.js';
 
 const ESCALATION_THRESHOLD_MINUTES = 10;
 const MANAGER_PHONE = process.env.MANAGER_PHONE || '+11234567890';
@@ -11,31 +12,29 @@ async function sendEscalation(to, requestId) {
 
 async function checkUnacknowledgedUrgentRequests() {
   console.log('🔍 Checking for unacknowledged URGENT requests...');
-  const thresholdDate = new Date(Date.now() - ESCALATION_THRESHOLD_MINUTES * 60 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - ESCALATION_THRESHOLD_MINUTES * 60 * 1000).toISOString();
 
   const { data: requests, error } = await supabase
     .from('requests')
     .select('*')
     .eq('priority', 'urgent')
     .is('acknowledged_at', null)
-    .lte('created_at', thresholdDate);
+    .lte('created_at', cutoff);
 
   if (error) {
     console.error('❌ Error fetching urgent requests:', error);
     return;
   }
 
-  for (const request of requests) {
-    console.log(`🚨 Found unacknowledged URGENT request ID ${request.id} older than ${ESCALATION_THRESHOLD_MINUTES} min`);
-    await sendEscalation(MANAGER_PHONE, request.id);
+  for (const req of requests) {
+    console.log(`🚨 Found unacknowledged URGENT request ID ${req.id} older than ${ESCALATION_THRESHOLD_MINUTES} min`);
+    await sendEscalation(MANAGER_PHONE, req.id);
   }
 
   console.log('✅ Escalation check complete.');
 }
 
-function start() {
+export function start() {
   checkUnacknowledgedUrgentRequests();
   setInterval(checkUnacknowledgedUrgentRequests, 5 * 60 * 1000);
 }
-
-export { start };

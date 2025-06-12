@@ -1,59 +1,93 @@
 import { createClient } from '@supabase/supabase-js';
-import { supabaseUrl, supabaseKey } from '../config/index.js';
+import { supabaseUrl, supabaseKey } from '../config.js';
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+// Initialize Supabase client, disabling the Realtime subsystem entirely
+const supabase = createClient(
+  supabaseUrl,
+  supabaseKey,
+  { realtime: { enabled: false } }
+);
 
+/**
+ * Fetch all requests, optionally scoped to a specific hotel.
+ */
 export async function getAllRequests(hotelId) {
-  let query = supabase.from('requests').select('*').order('created_at', { ascending: false });
-  if (hotelId) query = query.eq('hotel_id', hotelId);
+  let query = supabase
+    .from('requests')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (hotelId) {
+    query = query.eq('hotel_id', hotelId);
+  }
+
   const { data, error } = await query;
   if (error) throw new Error(error.message);
   return data;
 }
 
+/**
+ * Insert a new request for a given hotel.
+ */
 export async function insertRequest({ hotel_id, from_phone, message, department, priority, telnyx_id }) {
   const { data, error } = await supabase
     .from('requests')
     .insert([{ hotel_id, from_phone, message, department, priority, telnyx_id }])
     .select();
+
   if (error) throw new Error(error.message);
   return data[0];
 }
 
+/**
+ * Find a request by its Telnyx message ID.
+ */
 export async function findByTelnyxId(telnyx_id) {
   const { data, error } = await supabase
     .from('requests')
     .select('id')
     .eq('telnyx_id', telnyx_id)
     .maybeSingle();
+
   if (error) throw new Error(error.message);
   return data;
 }
 
+/**
+ * Acknowledge a request (mark acknowledged + timestamp).
+ */
 export async function acknowledgeRequestById(id) {
   const { data, error } = await supabase
     .from('requests')
     .update({ acknowledged: true, acknowledged_at: new Date().toISOString() })
     .eq('id', id)
     .select();
+
   if (error) throw new Error(error.message);
   return data[0];
 }
 
+/**
+ * Complete a request (mark completed + timestamp).
+ */
 export async function completeRequestById(id) {
   const { data, error } = await supabase
     .from('requests')
     .update({ completed: true, completed_at: new Date().toISOString() })
     .eq('id', id)
     .select();
+
   if (error) throw new Error(error.message);
   return data[0];
 }
 
+/**
+ * Summary analytics: counts for today, this week, this month.
+ */
 export async function getAnalyticsSummary() {
   const now = new Date();
   const startOfToday = new Date(now.setHours(0, 0, 0, 0));
-  const startOfWeek = new Date(startOfToday);
+  const startOfWeek  = new Date(startOfToday);
   startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
   const startOfMonth = new Date(startOfToday.getFullYear(), startOfToday.getMonth(), 1);
 
@@ -64,19 +98,23 @@ export async function getAnalyticsSummary() {
   ]);
 
   if (todayCount.error) throw new Error(todayCount.error.message);
-  if (weekCount.error) throw new Error(weekCount.error.message);
+  if (weekCount.error)  throw new Error(weekCount.error.message);
   if (monthCount.error) throw new Error(monthCount.error.message);
 
   return {
-    today: todayCount.count,
-    this_week: weekCount.count,
+    today:      todayCount.count,
+    this_week:  weekCount.count,
     this_month: monthCount.count,
   };
 }
 
+/**
+ * Analytics: count of requests by department.
+ */
 export async function getAnalyticsByDepartment() {
   const { data, error } = await supabase.from('requests').select('department');
   if (error) throw new Error(error.message);
+
   return data.reduce((acc, { department }) => {
     const dept = department || 'unknown';
     acc[dept] = (acc[dept] || 0) + 1;
@@ -84,6 +122,9 @@ export async function getAnalyticsByDepartment() {
   }, {});
 }
 
+/**
+ * Analytics: average response time (in minutes).
+ */
 export async function getAnalyticsAvgResponseTime() {
   const { data, error } = await supabase
     .from('requests')
@@ -100,8 +141,14 @@ export async function getAnalyticsAvgResponseTime() {
   return { average_response_time_minutes: parseFloat(avg.toFixed(2)) };
 }
 
+/**
+ * Analytics: daily avg response times via RPC.
+ */
 export async function getAnalyticsDailyResponseTimes() {
   const { data, error } = await supabase.rpc('get_avg_response_times_last_7_days');
   if (error) throw new Error(error.message);
   return data;
 }
+
+// Export the client itself in case you need it elsewhere
+export { supabase };
