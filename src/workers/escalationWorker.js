@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import { supabase } from '../services/supabaseService.js';
 import { sendSms } from '../services/smsGateway.js';
 

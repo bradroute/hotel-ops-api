@@ -1,10 +1,9 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-// Polyfill WebSocket (Supabase realtime needs this on server-side Node)
+import ws from 'ws';
 if (typeof global.WebSocket === 'undefined') {
-  const wsImport = await import('ws');
-  global.WebSocket = wsImport.default;
+  global.WebSocket = ws;
 }
 
 import { start as startAckReminderWorker } from './ackReminderWorker.js';
@@ -12,7 +11,6 @@ import { start as startEscalationWorker } from './escalationWorker.js';
 
 function startWorkers() {
   console.log('🚀 Starting HotelOps workers...');
-
   startAckReminderWorker();
   startEscalationWorker();
 }
