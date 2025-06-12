@@ -1,5 +1,11 @@
 // src/app.js
 require('dotenv').config();
+
+// 👉 Add WebSocket polyfill for Supabase compatibility
+if (typeof WebSocket === 'undefined') {
+  global.WebSocket = require('ws');
+}
+
 const express     = require('express');
 const cors        = require('cors');
 const rateLimit   = require('express-rate-limit');
