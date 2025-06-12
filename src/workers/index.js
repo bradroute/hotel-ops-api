@@ -3,9 +3,10 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-// Add WebSocket polyfill for Supabase compatibility (ESM-safe)
-if (typeof WebSocket === 'undefined') {
-  global.WebSocket = await import('ws').then(m => m.default);
+// WebSocket polyfill (ESM-safe)
+if (typeof global.WebSocket === 'undefined') {
+  const ws = await import('ws');
+  global.WebSocket = ws.default;
 }
 
 import { start as startAckReminderWorker } from './ackReminderWorker.js';
