@@ -1,6 +1,8 @@
-require('dotenv').config();
-const { supabase } = require('../services/supabaseService');
-const { sendSms } = require('../services/smsGateway');
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { supabase } from '../services/supabaseService.js';
+import { sendSms } from '../services/smsGateway.js';
 
 const ESCALATION_THRESHOLD_MINUTES = 10;
 const MANAGER_PHONE = process.env.MANAGER_PHONE || '+11234567890';
@@ -34,9 +36,7 @@ async function checkUnacknowledgedUrgentRequests() {
   console.log('✅ Escalation check complete.');
 }
 
-function start() {
+export function start() {
   checkUnacknowledgedUrgentRequests();
   setInterval(checkUnacknowledgedUrgentRequests, 5 * 60 * 1000);
 }
-
-module.exports = { start };

@@ -1,6 +1,8 @@
-require('dotenv').config();
-const { supabase } = require('../services/supabaseService');
-const { sendSms } = require('../services/smsGateway');
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { supabase } from '../services/supabaseService.js';
+import { sendSms } from '../services/smsGateway.js';
 
 const REMINDER_THRESHOLD_MINUTES = 15;
 const MANAGER_PHONE = process.env.MANAGER_PHONE || '+11234567890';
@@ -33,9 +35,7 @@ async function checkUnacknowledgedRequests() {
   console.log('✅ Reminder check complete.');
 }
 
-function start() {
+export function start() {
   checkUnacknowledgedRequests();
   setInterval(checkUnacknowledgedRequests, 5 * 60 * 1000);
 }
-
-module.exports = { start };

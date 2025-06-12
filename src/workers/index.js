@@ -1,7 +1,8 @@
-require('dotenv').config();
+import dotenv from 'dotenv';
+dotenv.config();
 
-const ackReminderWorker = require('./ackReminderWorker');
-const escalationWorker = require('./escalationWorker');
+import * as ackReminderWorker from './ackReminderWorker.js';
+import * as escalationWorker from './escalationWorker.js';
 
 function startWorkers() {
   console.log('🚀 Starting HotelOps workers...');

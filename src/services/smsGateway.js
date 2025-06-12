@@ -1,9 +1,11 @@
-require('dotenv').config();
-const { sendTelnyxSms } = require('./telnyxService');
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { sendTelnyxSms } from './telnyxService.js';
 
 const DRY_RUN = process.env.SEND_SMS !== 'true';  // default to dry-run unless explicitly true
 
-async function sendSms(to, message, context = 'General') {
+export async function sendSms(to, message, context = 'General') {
   if (DRY_RUN) {
     console.log(`[DRY RUN SMS] (${context}) To: ${to} | Message: "${message}"`);
     return;
@@ -17,5 +19,3 @@ async function sendSms(to, message, context = 'General') {
     console.error(`[SMS FAILURE] (${context}) To: ${to} | Error:`, err);
   }
 }
-
-module.exports = { sendSms };
