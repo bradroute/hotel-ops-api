@@ -1,9 +1,6 @@
-import dotenv from 'dotenv';
-dotenv.config();
+import { sendConfirmationSms } from './telnyxService.js';
 
-import { sendTelnyxSms } from './telnyxService.js';
-
-const DRY_RUN = process.env.SEND_SMS !== 'true';  // default to dry-run unless explicitly true
+const DRY_RUN = process.env.SEND_SMS !== 'true';
 
 export async function sendSms(to, message, context = 'General') {
   if (DRY_RUN) {
@@ -12,7 +9,7 @@ export async function sendSms(to, message, context = 'General') {
   }
 
   try {
-    const result = await sendTelnyxSms(to, message);
+    const result = await sendConfirmationSms(to, message);
     console.log(`[REAL SMS SENT] (${context}) To: ${to} | Telnyx result:`, result);
     return result;
   } catch (err) {

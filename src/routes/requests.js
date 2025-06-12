@@ -1,64 +1,48 @@
 import express from 'express';
+import { supabase } from '../services/supabaseService.js';
 const router = express.Router();
 
-import { supabase } from '../services/supabaseService.js';
-
-// GET /requests → return all rows from HotelCrosbyRequests
 router.get('/', async (req, res, next) => {
   try {
     const { data, error } = await supabase
-      .from('HotelCrosbyRequests')
+      .from('requests')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-
-    const formatted = data.map((row) => ({
-      id: row.id,
-      from: row.from,
-      department: row.department,
-      priority: row.priority,
-      message: row.message,
-      created_at: row.created_at,
-      acknowledged: row.acknowledged,
-      completed: row.completed,
-    }));
-
-    return res.json(formatted);
+    res.json(data);
   } catch (err) {
     next(err);
   }
 });
 
-// POST /requests/:id/acknowledge → set acknowledged=true
 router.post('/:id/acknowledge', async (req, res, next) => {
-  const id = req.params.id;
   try {
+    const id = req.params.id;
     const { data, error } = await supabase
-      .from('HotelCrosbyRequests')
-      .update({ acknowledged: true })
+      .from('requests')
+      .update({ acknowledged: true, acknowledged_at: new Date().toISOString() })
       .eq('id', id)
-      .single();
+      .select();
 
     if (error) throw error;
-    return res.json({ success: true, updated: data });
+    res.json({ success: true, updated: data[0] });
   } catch (err) {
     next(err);
   }
 });
 
-// POST /requests/:id/complete → set completed=true
 router.post('/:id/complete', async (req, res, next) => {
-  const id = req.params.id;
   try {
+    const id = req.params.id;
     const { data, error } = await supabase
-      .from('HotelCrosbyRequests')
-      .update({ completed: true })
+      .from('requests')
+      .update({ completed: true, completed_at: new Date().toISOString() })
       .eq('id', id)
-      .single();
+      .select();
 
     if (error) throw error;
-    return res.json({ success: true, updated: data });
+    res.json({ success: true, updated: data[0] });
   } catch (err) {
     next(err);
   }

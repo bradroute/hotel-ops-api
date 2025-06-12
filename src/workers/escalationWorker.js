@@ -33,7 +33,9 @@ async function checkUnacknowledgedUrgentRequests() {
   console.log('✅ Escalation check complete.');
 }
 
-export function start() {
+function start() {
   checkUnacknowledgedUrgentRequests();
   setInterval(checkUnacknowledgedUrgentRequests, 5 * 60 * 1000);
 }
+
+export default { start };

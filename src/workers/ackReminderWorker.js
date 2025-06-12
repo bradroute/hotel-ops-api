@@ -32,7 +32,9 @@ async function checkUnacknowledgedRequests() {
   console.log('✅ Reminder check complete.');
 }
 
-export function start() {
+function start() {
   checkUnacknowledgedRequests();
   setInterval(checkUnacknowledgedRequests, 5 * 60 * 1000);
 }
+
+export default { start };

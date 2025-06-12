@@ -1,10 +1,8 @@
-import { OpenAI } from 'openai';
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+import OpenAI from 'openai';
+import { openAIApiKey } from '../config/index.js';
 
-/**
- * Given a free-form message, returns an object
- * { department: string, priority: string }
- */
+const openai = new OpenAI({ apiKey: openAIApiKey });
+
 export async function classify(text) {
   const prompt = `You are a hotel task classifier. Given the message below, return JSON with two fields: "department" and "priority".
 

@@ -1,16 +1,13 @@
 import express from 'express';
+import { supabase } from '../services/supabaseService.js';
+import { classify } from '../services/classifier.js';
+
 const router = express.Router();
 
-import { classify } from '../services/classifier.js';
-import { supabase } from '../services/supabaseService.js';
-
-// POST /api/webform — Handle incoming form submissions
-router.post('/api/webform', async (req, res, next) => {
+router.post('/', async (req, res, next) => {
   try {
     const { hotel_id, message } = req.body;
-    if (!hotel_id || !message) {
-      return res.status(400).send('Missing fields');
-    }
+    if (!hotel_id || !message) return res.status(400).send('Missing fields');
 
     let department = 'General';
     let priority = 'Normal';
@@ -24,7 +21,7 @@ router.post('/api/webform', async (req, res, next) => {
 
     await supabase
       .from('requests')
-      .insert({ hotel_id, text: message, department, priority });
+      .insert({ hotel_id, message, department, priority });
 
     res.sendStatus(200);
   } catch (err) {

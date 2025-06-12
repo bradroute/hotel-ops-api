@@ -1,16 +1,17 @@
-import { telnyxApiKey, telnyxNumber } from '../config.js';
+import { telnyxApiKey, telnyxNumber } from '../config/index.js';
 
-/**
- * Internal function that sends SMS via Telnyx.
- * Used by both main app and worker.
- */
-async function sendTelnyxSms(toNumber, text) {
+export async function sendConfirmationSms(destinationNumber) {
+  const toNumber =
+    typeof destinationNumber === 'string'
+      ? destinationNumber
+      : destinationNumber?.phone_number || String(destinationNumber);
+
   console.log('📨 telnyxService: sending from', telnyxNumber, 'to', toNumber);
 
   const smsPayload = {
     from: telnyxNumber,
     to: toNumber,
-    text,
+    text: 'Hi! Your request has been received and is being taken care of. - Hotel Crosby',
   };
 
   const response = await fetch('https://api.telnyx.com/v2/messages', {
@@ -33,20 +34,4 @@ async function sendTelnyxSms(toNumber, text) {
   console.log('📨 telnyxService: Telnyx response:', data);
   return data;
 }
-
-/**
- * Public function used for confirmation SMS inside app routes.
- */
-export async function sendConfirmationSms(destinationNumber) {
-  const toNumber =
-    typeof destinationNumber === 'string'
-      ? destinationNumber
-      : destinationNumber?.phone_number || String(destinationNumber);
-
-  const text = 'Hi! Your request has been received and is being taken care of. - Hotel Crosby';
-  return sendTelnyxSms(toNumber, text);
-}
-
-// Export for worker code
-export { sendTelnyxSms };
 
