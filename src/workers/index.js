@@ -1,13 +1,16 @@
+import ws from 'ws';
+global.WebSocket = ws;
+
 import dotenv from 'dotenv';
 dotenv.config();
 
-import ackReminderWorker from './ackReminderWorker.js';
-import escalationWorker from './escalationWorker.js';
+import { start as startAckReminderWorker } from './ackReminderWorker.js';
+import { start as startEscalationWorker } from './escalationWorker.js';
 
 function startWorkers() {
   console.log('🚀 Starting HotelOps workers...');
-  ackReminderWorker.start();
-  escalationWorker.start();
+  startAckReminderWorker();
+  startEscalationWorker();
 }
 
 startWorkers();
