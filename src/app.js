@@ -1,33 +1,27 @@
 // src/app.js
-require('dotenv').config();
+
+import dotenv from 'dotenv';
+dotenv.config();
 
 // 👉 Add WebSocket polyfill for Supabase compatibility
+import ws from 'ws';
 if (typeof WebSocket === 'undefined') {
-  global.WebSocket = require('ws');
+  global.WebSocket = ws;
 }
 
-const express     = require('express');
-const cors        = require('cors');
-const rateLimit   = require('express-rate-limit');
-const { errorHandler } = require('./middleware/errorHandler');
+import express from 'express';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import { errorHandler } from './middleware/errorHandler.js';
 
 // Import your routers
-const requestsRouterRaw  = require('./routes/requests');
-const smsRouterRaw       = require('./routes/sms');
-const analyticsRouterRaw = require('./routes/analytics');
-const webformRouterRaw   = require('./routes/webform');
-
-// Unwrap potential ESM default exports
-function unwrap(m) {
-  return (m && m.default) ? m.default : m;
-}
-const requestsRouter  = unwrap(requestsRouterRaw);
-const smsRouter       = unwrap(smsRouterRaw);
-const analyticsRouter = unwrap(analyticsRouterRaw);
-const webformRouter   = unwrap(webformRouterRaw);
+import requestsRouter from './routes/requests.js';
+import smsRouter from './routes/sms.js';
+import analyticsRouter from './routes/analytics.js';
+import webformRouter from './routes/webform.js';
 
 const app = express();
-app.set('trust proxy', 1);             // behind Render or other proxies
+app.set('trust proxy', 1);  // behind Render or other proxies
 app.use(cors());
 app.use(express.json());
 
@@ -37,7 +31,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 // 1️⃣ Requests API
 app.use('/requests', requestsRouter);
 
-// 2️⃣ SMS webhook (logging → rate‐limit → router)
+// 2️⃣ SMS webhook (logging → rate-limit → router)
 app.use(
   '/sms',
   (req, res, next) => {
@@ -60,4 +54,4 @@ app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 // Central error handler
 app.use(errorHandler);
 
-module.exports = app;
+export default app;

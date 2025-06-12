@@ -1,35 +1,27 @@
-// src/routes/requests.js
-const express = require('express');
-const { createClient } = require('@supabase/supabase-js');
-
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
-
+import express from 'express';
 const router = express.Router();
+
+import { supabase } from '../services/supabaseService.js';
 
 // GET /requests → return all rows from HotelCrosbyRequests
 router.get('/', async (req, res, next) => {
   try {
     const { data, error } = await supabase
-      .from('HotelCrosbyRequests')            // ← correct table name here
+      .from('HotelCrosbyRequests')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
 
-    // Map each row exactly as your frontend expects
     const formatted = data.map((row) => ({
       id: row.id,
-      from: row.from,                         // your column is named “from”
+      from: row.from,
       department: row.department,
       priority: row.priority,
       message: row.message,
       created_at: row.created_at,
       acknowledged: row.acknowledged,
-      completed: row.completed,               // or row.completed_at !== null if you want a boolean
+      completed: row.completed,
     }));
 
     return res.json(formatted);
@@ -43,7 +35,7 @@ router.post('/:id/acknowledge', async (req, res, next) => {
   const id = req.params.id;
   try {
     const { data, error } = await supabase
-      .from('HotelCrosbyRequests')            // ← same table here
+      .from('HotelCrosbyRequests')
       .update({ acknowledged: true })
       .eq('id', id)
       .single();
@@ -55,13 +47,13 @@ router.post('/:id/acknowledge', async (req, res, next) => {
   }
 });
 
-// POST /requests/:id/complete → set completed=true (or set completed_at to now)
+// POST /requests/:id/complete → set completed=true
 router.post('/:id/complete', async (req, res, next) => {
   const id = req.params.id;
   try {
     const { data, error } = await supabase
-      .from('HotelCrosbyRequests')            // ← and here
-      .update({ completed: true })            // or .update({ completed_at: new Date() })
+      .from('HotelCrosbyRequests')
+      .update({ completed: true })
       .eq('id', id)
       .single();
 
@@ -72,4 +64,4 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-module.exports = router;
+export default router;

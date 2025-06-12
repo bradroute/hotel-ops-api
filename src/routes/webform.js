@@ -1,9 +1,8 @@
-// src/routes/webform.js
-const express    = require('express');
-const router     = express.Router();
+import express from 'express';
+const router = express.Router();
 
-const classify   = require('../services/classifier');
-const { supabase } = require('../services/supabaseService');
+import { classify } from '../services/classifier.js';
+import { supabase } from '../services/supabaseService.js';
 
 // POST /api/webform — Handle incoming form submissions
 router.post('/api/webform', async (req, res, next) => {
@@ -13,18 +12,16 @@ router.post('/api/webform', async (req, res, next) => {
       return res.status(400).send('Missing fields');
     }
 
-    // classify department + priority
     let department = 'General';
-    let priority   = 'Normal';
+    let priority = 'Normal';
     try {
       const result = await classify(message);
       department = result.department;
-      priority   = result.priority;
+      priority = result.priority;
     } catch (err) {
       console.warn('⚠️ Classification failed, defaulting to General/Normal', err);
     }
 
-    // save in Supabase
     await supabase
       .from('requests')
       .insert({ hotel_id, text: message, department, priority });
@@ -35,4 +32,4 @@ router.post('/api/webform', async (req, res, next) => {
   }
 });
 
-module.exports = router;
+export default router;

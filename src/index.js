@@ -4,12 +4,13 @@
 console.log('[DEBUG] src/index.js – starting up');
 
 // Load env vars
-require('dotenv').config();
+import dotenv from 'dotenv';
+dotenv.config();
 
 // Import Express app
-console.log('[DEBUG] src/index.js – about to require(\'./app\')');
-const app = require('./app');
-console.log('[DEBUG] src/index.js – required app successfully');
+console.log('[DEBUG] src/index.js – about to import(\'./app.js\')');
+import app from './app.js';
+console.log('[DEBUG] src/index.js – imported app successfully');
 
 // ─── Health check ───────────────────────────────────────────────────────
 app.get('/health', (req, res) => {

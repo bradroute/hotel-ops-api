@@ -1,16 +1,14 @@
-// src/routes/analytics.js
-
-const express = require('express');
+import express from 'express';
 const router = express.Router();
 
-const {
+import {
   getAnalyticsSummary,
   getAnalyticsByDepartment,
   getAnalyticsAvgResponseTime,
   getAnalyticsDailyResponseTimes,
-} = require('../services/supabaseService');
+} from '../services/supabaseService.js';
 
-const { asyncWrapper } = require('../utils/asyncWrapper');
+import { asyncWrapper } from '../utils/asyncWrapper.js';
 
 // GET /analytics/summary
 router.get(
@@ -48,4 +46,4 @@ router.get(
   })
 );
 
-module.exports = router;
+export default router;
