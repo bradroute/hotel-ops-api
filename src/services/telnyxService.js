@@ -1,22 +1,16 @@
 import { telnyxApiKey, telnyxNumber } from '../config.js';
 
 /**
- * Send a confirmation SMS via Telnyx.
- * @param {string|object} destinationNumber E.164‐formatted phone number or object containing phone_number property
- * @returns {object} Telnyx API JSON response
+ * Internal function that sends SMS via Telnyx.
+ * Used by both main app and worker.
  */
-export async function sendConfirmationSms(destinationNumber) {
-  const toNumber =
-    typeof destinationNumber === 'string'
-      ? destinationNumber
-      : destinationNumber?.phone_number || String(destinationNumber);
-
+async function sendTelnyxSms(toNumber, text) {
   console.log('📨 telnyxService: sending from', telnyxNumber, 'to', toNumber);
 
   const smsPayload = {
     from: telnyxNumber,
     to: toNumber,
-    text: 'Hi! Your request has been received and is being taken care of. - Hotel Crosby',
+    text,
   };
 
   const response = await fetch('https://api.telnyx.com/v2/messages', {
@@ -39,3 +33,20 @@ export async function sendConfirmationSms(destinationNumber) {
   console.log('📨 telnyxService: Telnyx response:', data);
   return data;
 }
+
+/**
+ * Public function used for confirmation SMS inside app routes.
+ */
+export async function sendConfirmationSms(destinationNumber) {
+  const toNumber =
+    typeof destinationNumber === 'string'
+      ? destinationNumber
+      : destinationNumber?.phone_number || String(destinationNumber);
+
+  const text = 'Hi! Your request has been received and is being taken care of. - Hotel Crosby';
+  return sendTelnyxSms(toNumber, text);
+}
+
+// Export for worker code
+export { sendTelnyxSms };
+
