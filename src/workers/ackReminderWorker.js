@@ -37,4 +37,4 @@ function start() {
   setInterval(checkUnacknowledgedRequests, 5 * 60 * 1000);
 }
 
-export default { start };
+export { start };
