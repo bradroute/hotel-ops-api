@@ -35,15 +35,24 @@ router.post('/', async (req, res) => {
     let room_number = null;
 
     try {
-      const c = await classify(message);
-      department = c.department;
-      priority = c.priority;
-      room_number = c.room_number;
-    } catch {
-      console.warn('⚠️ Classification failed. Using default values.');
+      const result = await classify(message);
+      department = result.department;
+      priority = result.priority;
+      room_number = result.room_number;
+    } catch (err) {
+      console.warn('⚠️ Classification failed. Using default values.', err);
     }
 
-    const inserted = await insertRequest({ hotel_id, from_phone, message, department, priority, telnyx_id: telnyxId, room_number });
+    const inserted = await insertRequest({
+      hotel_id,
+      from_phone,
+      message,
+      department,
+      priority,
+      room_number,
+      telnyx_id: telnyxId
+    });
+
     console.log('🆕 Inserted:', inserted);
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
