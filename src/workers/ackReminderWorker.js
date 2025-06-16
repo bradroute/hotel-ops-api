@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { supabase } from '../services/supabaseService.js';
 import { sendSms } from '../services/smsGateway.js';
 
-const REMINDER_THRESHOLD_MINUTES = 15;
+const REMINDER_THRESHOLD_MINUTES = 6;
 const MANAGER_PHONE = process.env.MANAGER_PHONE;
 
 async function checkUnacknowledgedRequests() {
@@ -30,5 +30,5 @@ async function checkUnacknowledgedRequests() {
 
 export function start() {
   checkUnacknowledgedRequests();
-  setInterval(checkUnacknowledgedRequests, 5 * 60 * 1000);
+  setInterval(checkUnacknowledgedRequests, 5 * 60 * 1000);  // Still runs every 5 min
 }

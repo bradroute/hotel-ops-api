@@ -1,29 +1,35 @@
 import express from 'express';
-import { supabase } from '../services/supabaseService.js';
+import { insertRequest } from '../services/supabaseService.js';
 import { classify } from '../services/classifier.js';
 
 const router = express.Router();
 
 router.post('/', async (req, res, next) => {
   try {
-    const { hotel_id, message } = req.body;
+    const { hotel_id, message, from_phone = null, telnyx_id = null } = req.body;
     if (!hotel_id || !message) return res.status(400).send('Missing fields');
 
-    let department = 'General';
-    let priority = 'Normal';
+    let department = 'General', priority = 'Normal', room_number = null;
     try {
       const result = await classify(message);
       department = result.department;
       priority = result.priority;
+      room_number = result.room_number;
     } catch (err) {
       console.warn('⚠️ Classification failed, defaulting to General/Normal', err);
     }
 
-    await supabase
-      .from('requests')
-      .insert({ hotel_id, message, department, priority });
+    const newRequest = await insertRequest({
+      hotel_id,
+      from_phone,
+      message,
+      department,
+      priority,
+      room_number,
+      telnyx_id
+    });
 
-    res.sendStatus(200);
+    res.status(201).json(newRequest);
   } catch (err) {
     next(err);
   }

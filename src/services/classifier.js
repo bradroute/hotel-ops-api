@@ -4,26 +4,27 @@ import { openAIApiKey } from '../config/index.js';
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
 export async function classify(text) {
-  const prompt = `You are a hotel task classifier. Given the message below, return JSON with two fields: "department" and "priority".
+  const prompt = `You are a hotel task classifier. 
 
-Departments: Housekeeping, Maintenance, Front Desk, Valet, Room Service  
-Priorities: urgent, normal, low
+Given the guest message below, return JSON with the following fields:
+- "department" (Housekeeping, Maintenance, Front Desk, Valet, Room Service)
+- "priority" (urgent, normal, low)
+- "room_number" (extract the room number if mentioned, otherwise return null)
 
 Message: "${text}"`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4',
+    model: 'gpt-4o',
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.2
   });
 
   try {
     const content = response.choices[0].message.content;
-    const { department, priority } = JSON.parse(content);
-    return { department, priority };
+    const { department, priority, room_number } = JSON.parse(content);
+    return { department, priority, room_number };
   } catch (e) {
     console.error('Classification failed:', e);
-    return { department: 'Front Desk', priority: 'normal' };
+    return { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 }
-
