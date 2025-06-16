@@ -1,3 +1,5 @@
+// src/routes/webform.js
+
 import express from 'express';
 import { insertRequest } from '../services/supabaseService.js';
 import { classify } from '../services/classifier.js';
@@ -9,7 +11,10 @@ router.post('/', async (req, res, next) => {
     const { hotel_id, message, from_phone = null, telnyx_id = null } = req.body;
     if (!hotel_id || !message) return res.status(400).send('Missing fields');
 
-    let department = 'General', priority = 'Normal', room_number = null;
+    let department = 'General';
+    let priority = 'Normal';
+    let room_number = null;
+
     try {
       const result = await classify(message);
       department = result.department;
@@ -25,8 +30,8 @@ router.post('/', async (req, res, next) => {
       message,
       department,
       priority,
+      telnyx_id,
       room_number,
-      telnyx_id
     });
 
     res.status(201).json(newRequest);

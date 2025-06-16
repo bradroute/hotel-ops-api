@@ -1,8 +1,11 @@
+// src/routes/sms.js
+
 import express from 'express';
 import { supabase, insertRequest } from '../services/supabaseService.js';
-import { findByTelnyxId, acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { sendConfirmationSms } from '../services/telnyxService.js';
 import { classify } from '../services/classifier.js';
+import { findByTelnyxId } from '../services/requestLookup.js';
+import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 
 const router = express.Router();
 
@@ -27,17 +30,20 @@ router.post('/', async (req, res) => {
     if (hotelErr || !hotel) return res.status(200).send('Ignored: unknown hotel number');
     const hotel_id = hotel.id;
 
-    let department = 'General', priority = 'Normal', room_number = null;
+    let department = 'General';
+    let priority = 'Normal';
+    let room_number = null;
+
     try {
       const c = await classify(message);
       department = c.department;
       priority = c.priority;
       room_number = c.room_number;
-    } catch {}
+    } catch {
+      console.warn('⚠️ Classification failed. Using default values.');
+    }
 
-    const inserted = await insertRequest({
-      hotel_id, from_phone, message, department, priority, room_number, telnyx_id: telnyxId
-    });
+    const inserted = await insertRequest({ hotel_id, from_phone, message, department, priority, telnyx_id: telnyxId, room_number });
     console.log('🆕 Inserted:', inserted);
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
