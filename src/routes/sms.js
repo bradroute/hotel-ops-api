@@ -66,6 +66,9 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     const updated = await acknowledgeRequestById(id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
+    // 🔧 DEBUG LOG ADDED:
+    console.log(`✅ Acknowledge triggered for ID: ${id}, sending SMS to ${updated.from_phone}`);
+
     let smsResult = null;
     try {
       smsResult = await sendConfirmationSms(updated.from_phone);
