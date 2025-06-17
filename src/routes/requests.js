@@ -1,118 +1,107 @@
 // src/routes/requests.js
 
 import express from 'express';
-import { supabase } from '../services/supabaseService.js';
+import { asyncWrapper } from '../utils/asyncWrapper.js';
+import {
+  getAllRequests,
+  insertRequest,
+  acknowledgeRequestById,
+  completeRequestById,
+  getNotesByRequestId,
+  addNoteToRequest,
+  deleteNoteById
+} from '../services/supabaseService.js';
+import { sendConfirmationSms } from '../services/telnyxService.js';
+
 const router = express.Router();
 
-// List all requests
-router.get('/', async (req, res, next) => {
-  try {
-    const { data, error } = await supabase
-      .from('requests')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
+// ── List all requests (optionally filter by hotelId) ───────────────────────
+router.get(
+  '/',
+  asyncWrapper(async (req, res) => {
+    const hotelId = req.query.hotelId;
+    const data = await getAllRequests(hotelId);
     res.json(data);
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
-// Acknowledge a request
-router.post('/:id/acknowledge', async (req, res, next) => {
-  try {
+// ── Create a new request ───────────────────────────────────────────────────
+router.post(
+  '/',
+  asyncWrapper(async (req, res) => {
+    const { hotel_id, from_phone, message, department, priority, telnyx_id, room_number } = req.body;
+    if (!hotel_id || !message) {
+      return res.status(400).json({ error: 'Missing required fields: hotel_id and message' });
+    }
+    const newReq = await insertRequest({
+      hotel_id,
+      from_phone,
+      message,
+      department,
+      priority,
+      telnyx_id,
+      room_number
+    });
+    res.status(201).json(newReq);
+  })
+);
+
+// ── Acknowledge a request and send confirmation SMS ────────────────────────
+router.patch(
+  '/:id/acknowledge',
+  asyncWrapper(async (req, res) => {
     const id = req.params.id;
-    const { data, error } = await supabase
-      .from('requests')
-      .update({ acknowledged: true, acknowledged_at: new Date().toISOString() })
-      .eq('id', id)
-      .select();
+    const updated = await acknowledgeRequestById(id);
+    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
-    if (error) throw error;
-    res.json({ success: true, updated: data[0] });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Complete a request
-router.post('/:id/complete', async (req, res, next) => {
-  try {
-    const id = req.params.id;
-    const { data, error } = await supabase
-      .from('requests')
-      .update({ completed: true, completed_at: new Date().toISOString() })
-      .eq('id', id)
-      .select();
-
-    if (error) throw error;
-    res.json({ success: true, updated: data[0] });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// GET all notes for a given request
-router.get('/:id/notes', async (req, res, next) => {
-  try {
-    const id = req.params.id;
-    const { data, error } = await supabase
-      .from('notes')
-      .select('*')
-      .eq('request_id', id)
-      .order('created_at', { ascending: true });
-
-    if (error) throw error;
-    res.json(data);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Add new note to request
-router.post('/:id/notes', async (req, res, next) => {
-  try {
-    const id = req.params.id;
-    const { content } = req.body;
-
-    if (!content) {
-      return res.status(400).json({ error: 'Note content is required.' });
+    console.log(`📨 Sending confirmation SMS for request ${id} to ${updated.from_phone}`);
+    try {
+      const smsResult = await sendConfirmationSms(updated.from_phone);
+      console.log('📨 Telnyx response:', smsResult);
+    } catch (err) {
+      console.error('❌ Failed to send confirmation SMS:', err);
     }
 
-    const { data, error } = await supabase
-      .from('notes')
-      .insert({
-        request_id: id,
-        content,
-        created_at: new Date().toISOString(),
-      })
-      .select();
+    res.json({ success: true, updated });
+  })
+);
 
-    if (error) throw error;
-    res.json({ success: true, note: data[0] });
-  } catch (err) {
-    next(err);
-  }
-});
+// ── Mark a request complete ────────────────────────────────────────────────
+router.patch(
+  '/:id/complete',
+  asyncWrapper(async (req, res) => {
+    const id = req.params.id;
+    const updated = await completeRequestById(id);
+    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
+    res.json({ success: true, updated });
+  })
+);
 
-// DELETE note from request
-router.delete('/:id/notes/:noteId', async (req, res, next) => {
-  try {
-    const { id, noteId } = req.params;
+// ── Notes ──────────────────────────────────────────────────────────────────
+router.get(
+  '/:id/notes',
+  asyncWrapper(async (req, res) => {
+    const notes = await getNotesByRequestId(req.params.id);
+    res.json(notes);
+  })
+);
 
-    const { error } = await supabase
-      .from('notes')
-      .delete()
-      .eq('id', noteId)
-      .eq('request_id', id);
+router.post(
+  '/:id/notes',
+  asyncWrapper(async (req, res) => {
+    const content = req.body.content;
+    if (!content) return res.status(400).json({ error: 'Note content is required.' });
+    const note = await addNoteToRequest(req.params.id, content);
+    res.json({ success: true, note });
+  })
+);
 
-    if (error) throw error;
-
+router.delete(
+  '/:id/notes/:noteId',
+  asyncWrapper(async (req, res) => {
+    await deleteNoteById(req.params.id, req.params.noteId);
     res.json({ success: true });
-  } catch (err) {
-    next(err);
-  }
-});
+  })
+);
 
 export default router;
