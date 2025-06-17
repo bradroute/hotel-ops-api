@@ -6,6 +6,7 @@ import {
   acknowledgeRequestById,
   completeRequestById
 } from '../services/requestActions.js';
+import { sendConfirmationSms } from '../services/telnyxService.js';
 
 const router = express.Router();
 
@@ -23,7 +24,7 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// Acknowledge a request
+// Acknowledge a request (and send confirmation SMS)
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
@@ -31,6 +32,15 @@ router.post('/:id/acknowledge', async (req, res, next) => {
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
+
+    console.log(`📣 [requests] Request ${id} acknowledged. Now sending confirmation SMS to ${updated.from_phone}…`);
+    try {
+      const smsResult = await sendConfirmationSms(updated.from_phone);
+      console.log('📨 [requests] Confirmation SMS sent:', smsResult);
+    } catch (smsErr) {
+      console.error('❌ [requests] Confirmation SMS failed:', smsErr);
+    }
+
     res.json({ success: true, updated });
   } catch (err) {
     next(err);
