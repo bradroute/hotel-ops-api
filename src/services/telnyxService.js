@@ -8,14 +8,20 @@ export async function sendConfirmationSms(destinationNumber) {
       ? destinationNumber
       : destinationNumber?.phone_number || String(destinationNumber);
 
-  console.log('📨 telnyxService: sending from', telnyxNumber, 'to', toNumber);
+  console.log(
+    '📨 telnyxService: sending from',
+    telnyxNumber,
+    'to',
+    toNumber,
+    'using messaging profile',
+    telnyxMessagingProfileId
+  );
 
   const smsPayload = {
     from: telnyxNumber,
     to: toNumber,
     text: 'Hi! Your request has been received and is being taken care of. - Hotel Crosby',
     messaging_profile_id: telnyxMessagingProfileId,
-    // channel: 'sms', // usually defaults to sms
   };
 
   const response = await fetch('https://api.telnyx.com/v2/messages', {
