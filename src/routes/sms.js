@@ -66,15 +66,17 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     const updated = await acknowledgeRequestById(id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
-    // 🔧 DEBUG LOG ADDED:
-    console.log(`✅ Acknowledge triggered for ID: ${id}, sending SMS to ${updated.from_phone}`);
+    console.log('🚀 About to send confirmation SMS for request ID:', id);
+    console.log('🚀 Destination phone number:', updated.from_phone);
 
     let smsResult = null;
     try {
       smsResult = await sendConfirmationSms(updated.from_phone);
+      console.log('📨 Confirmation SMS sent:', smsResult);
     } catch (err) {
       console.error(`❌ SMS send failed for request ${id}:`, err);
     }
+
     res.status(200).json({ success: true, message: 'Acknowledged', telnyx: smsResult });
   } catch (err) {
     next(err);
