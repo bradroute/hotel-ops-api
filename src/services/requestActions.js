@@ -7,9 +7,8 @@ export async function acknowledgeRequestById(id) {
     .from('requests')
     .update({ acknowledged: true, acknowledged_at: new Date().toISOString() })
     .eq('id', id)
-    .select('id, from_phone, acknowledged, acknowledged_at')
+    .select('*')  // ✅ Select full row after update
     .maybeSingle();
-
   if (error) throw new Error(error.message);
   return data;
 }
@@ -19,9 +18,8 @@ export async function completeRequestById(id) {
     .from('requests')
     .update({ completed: true, completed_at: new Date().toISOString() })
     .eq('id', id)
-    .select('id, completed, completed_at')
+    .select('*')  // ✅ Select full row after update
     .maybeSingle();
-
   if (error) throw new Error(error.message);
   return data;
 }
