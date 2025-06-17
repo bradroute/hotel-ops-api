@@ -1,21 +1,15 @@
 // src/services/telnyxService.js
 
+import fetch from 'node-fetch';
 import { telnyxApiKey, telnyxNumber, telnyxMessagingProfileId } from '../config/index.js';
 
 export async function sendConfirmationSms(destinationNumber) {
-  const toNumber =
-    typeof destinationNumber === 'string'
-      ? destinationNumber
-      : destinationNumber?.phone_number || String(destinationNumber);
+  // normalize to a plain string
+  const toNumber = typeof destinationNumber === 'string'
+    ? destinationNumber
+    : destinationNumber?.phone_number;
 
-  console.log(
-    '📨 telnyxService: sending from',
-    telnyxNumber,
-    'to',
-    toNumber,
-    'using messaging profile',
-    telnyxMessagingProfileId
-  );
+  console.log('📨 telnyxService: sending from', telnyxNumber, 'to', toNumber);
 
   const smsPayload = {
     from: telnyxNumber,
