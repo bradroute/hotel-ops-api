@@ -10,46 +10,86 @@ router.get('/full', async (req, res) => {
       return res.status(400).json({ error: 'Missing required query params' });
     }
 
+    // Normalize date range to include full end-of-day
+    const startISO = new Date(startDate).toISOString();
+    const endObj = new Date(endDate);
+    endObj.setHours(23, 59, 59, 999);
+    const endISO = endObj.toISOString();
+
+    // Fetch metrics in parallel (Phases 1-4)
     const [
       totalRequests,
-      slaCompliance,
-      avgCompletionTime,
-      escalationCount,
-      deptBreakdown,
-      requestVolumeGrowth,
-      repeatGuestActivity,
-      priorityBreakdown,
+      avgAckTime,
+      missedSLAs,
+      requestsPerDay,
+      topDepartments,
+      commonWords,
+      vipCount,
+      repeatPercent,
       estimatedRevenue,
-      dailyResponseTimes
+      laborTimeSaved,
+      serviceScoreEstimate,
+      serviceScoreTrend,
+      priorityBreakdown,
+      avgCompletionTime,
+      repeatGuestTrend,
+      enhancedLaborTimeSaved,
+      requestsPerOccupiedRoom,
+      topEscalationReasons
     ] = await Promise.all([
-      supabaseService.getTotalRequests(startDate, endDate, hotelId),
-      supabaseService.getSLACompliance(startDate, endDate, 600, hotelId),
-      supabaseService.getAvgCompletionTime(startDate, endDate, hotelId),
-      supabaseService.getEscalationCount(startDate, endDate, 600, hotelId),
-      supabaseService.getRequestsByDepartment(startDate, endDate, hotelId),
-      supabaseService.getRequestVolumeGrowth(startDate, endDate, hotelId),
-      supabaseService.getRepeatGuestActivity(startDate, endDate, hotelId),
-      supabaseService.getRequestsByPriority(startDate, endDate, hotelId),
-      supabaseService.getEstimatedRevenue(startDate, endDate, hotelId),
-      supabaseService.getDailyResponseTimes(startDate, endDate, hotelId),
+      // Phase 1
+      supabaseService.getTotalRequests(startISO, endISO, hotelId),
+      supabaseService.getAvgAckTime(startISO, endISO, hotelId),
+      supabaseService.getMissedSLACount(startISO, endISO, hotelId),
+      supabaseService.getRequestsPerDay(startISO, endISO, hotelId),
+      // Phase 2
+      supabaseService.getTopDepartments(startISO, endISO, hotelId),
+      supabaseService.getCommonRequestWords(startISO, endISO, hotelId),
+      supabaseService.getVIPGuestCount(startISO, endISO),
+      supabaseService.getRepeatRequestRate(startISO, endISO, hotelId),
+      // Phase 3
+      supabaseService.getEstimatedRevenue(startISO, endISO, hotelId),
+      supabaseService.getLaborTimeSaved(startISO, endISO, hotelId),
+      supabaseService.getServiceScoreEstimate(startISO, endISO, hotelId),
+      // Phase 4
+      supabaseService.getServiceScoreTrend(startISO, endISO, hotelId),
+      supabaseService.getPriorityBreakdown(startISO, endISO, hotelId),
+      supabaseService.getAvgCompletionTime(startISO, endISO, hotelId),  // use correct function
+      supabaseService.getRepeatGuestTrend(startISO, endISO, hotelId),
+      supabaseService.getEnhancedLaborTimeSaved(startISO, endISO, hotelId),
+      supabaseService.getRequestsPerOccupiedRoom(startISO, endISO, hotelId),
+      supabaseService.getTopEscalationReasons(startISO, endISO, hotelId)
     ]);
 
+    // Return combined JSON response
     res.json({
+      // Phase 1
       total: totalRequests,
-      sla: slaCompliance,
-      avgComplete: avgCompletionTime,
-      escalations: escalationCount,
-      deptBreakdown,
-      volumeGrowth: requestVolumeGrowth,
-      repeatGuests: repeatGuestActivity,
-      priority: priorityBreakdown,
-      revenue: estimatedRevenue,
-      dailyResp: dailyResponseTimes,
+      avgAck: avgAckTime,
+      missedSLAs,
+      requestsPerDay,
+      // Phase 2
+      topDepartments,
+      commonWords,
+      vipCount,
+      repeatPercent,
+      // Phase 3
+      estimatedRevenue,
+      laborTimeSaved,
+      serviceScoreEstimate,
+      // Phase 4
+      serviceScoreTrend,
+      priorityBreakdown,
+      avgCompletion: avgCompletionTime,
+      repeatGuestTrend,
+      enhancedLaborTimeSaved,
+      requestsPerOccupiedRoom,
+      topEscalationReasons
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'API error: ' + err.message });
+    console.error('🔥 Analytics API error:', err.stack || err.message || err);
+    res.status(500).json({ error: 'API Error: ' + (err.message || 'Unknown error') });
   }
 });
 

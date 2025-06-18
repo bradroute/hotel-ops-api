@@ -1,5 +1,3 @@
-// src/routes/sms.js
-
 import express from 'express';
 import { supabase, insertRequest } from '../services/supabaseService.js';
 import { sendConfirmationSms } from '../services/telnyxService.js';
@@ -17,10 +15,12 @@ router.post('/', async (req, res) => {
     const message = payload.text;
     const telnyxId = payload.id;
 
+    // Basic validation and filtering
     if (!from_phone || !to || !message) return res.status(200).send('Ignored: missing fields');
     if (from_phone === process.env.TELNYX_NUMBER) return res.status(200).send('Ignored: outgoing confirmation');
     if (await findByTelnyxId(telnyxId)) return res.status(200).send('Ignored: duplicate');
 
+    // Find the hotel by the "to" number
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
@@ -30,10 +30,12 @@ router.post('/', async (req, res) => {
     if (hotelErr || !hotel) return res.status(200).send('Ignored: unknown hotel number');
     const hotel_id = hotel.id;
 
+    // Default classifications
     let department = 'General';
     let priority = 'Normal';
     let room_number = null;
 
+    // Run classification (department, priority, room)
     try {
       const result = await classify(message);
       department = result.department;
@@ -43,6 +45,7 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ Classification failed. Using default values.', err);
     }
 
+    // Insert the request (VIP logic is handled inside)
     const inserted = await insertRequest({
       hotel_id,
       from_phone,
@@ -57,6 +60,7 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
   }
+
   res.status(200).json({ success: true });
 });
 
