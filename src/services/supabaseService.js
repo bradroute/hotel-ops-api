@@ -440,3 +440,94 @@ export async function getTopEscalationReasons(startDate, endDate, hotelId) {
     .slice(0,5)
     .map(([reason, count]) => ({ reason, count }));
 }
+/**
+ * % Completed Per Day
+ */
+export async function getDailyCompletionRate(startDate, endDate, hotelId) {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('created_at, completed_at')
+    .eq('hotel_id', hotelId)
+    .gte('created_at', startDate)
+    .lte('created_at', endDate);
+  if (error) throw new Error(error.message);
+
+  const byDate = {};
+  data.forEach(({ created_at, completed_at }) => {
+    const day = created_at.slice(0, 10);
+    byDate[day] = byDate[day] || { total: 0, completed: 0 };
+    byDate[day].total++;
+    if (completed_at) byDate[day].completed++;
+  });
+
+  return Object.entries(byDate).map(([date, { total, completed }]) => ({
+    date,
+    completionRate: parseFloat(((completed / total) * 100).toFixed(2)),
+  }));
+}
+
+/**
+ * % Completed Per Week
+ */
+export async function getWeeklyCompletionRate(startDate, endDate, hotelId) {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('created_at, completed_at')
+    .eq('hotel_id', hotelId)
+    .gte('created_at', startDate)
+    .lte('created_at', endDate);
+  if (error) throw new Error(error.message);
+
+  const byWeek = {};
+  data.forEach(({ created_at, completed_at }) => {
+    const d = new Date(created_at);
+    const year = d.getUTCFullYear();
+    // ISO week number approximation
+    const weekNum = Math.ceil(
+      ((d - new Date(year, 0, 1)) / 86400000 +
+       new Date(year, 0, 1).getUTCDay() +
+       1) /
+        7
+    );
+    const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
+
+    byWeek[week] = byWeek[week] || { total: 0, completed: 0 };
+    byWeek[week].total++;
+    if (completed_at) byWeek[week].completed++;
+  });
+
+  return Object.entries(byWeek)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, { total, completed }]) => ({
+      period,
+      completionRate: parseFloat(((completed / total) * 100).toFixed(2)),
+    }));
+}
+
+/**
+ * % Completed Per Month
+ */
+export async function getMonthlyCompletionRate(startDate, endDate, hotelId) {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('created_at, completed_at')
+    .eq('hotel_id', hotelId)
+    .gte('created_at', startDate)
+    .lte('created_at', endDate);
+  if (error) throw new Error(error.message);
+
+  const byMonth = {};
+  data.forEach(({ created_at, completed_at }) => {
+    const month = created_at.slice(0, 7); // “YYYY-MM”
+    byMonth[month] = byMonth[month] || { total: 0, completed: 0 };
+    byMonth[month].total++;
+    if (completed_at) byMonth[month].completed++;
+  });
+
+  return Object.entries(byMonth)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, { total, completed }]) => ({
+      period,
+      completionRate: parseFloat(((completed / total) * 100).toFixed(2)),
+    }));
+}
