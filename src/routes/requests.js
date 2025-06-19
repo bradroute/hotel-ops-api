@@ -10,15 +10,34 @@ import { sendConfirmationSms } from '../services/telnyxService.js';
 
 const router = express.Router();
 
-// List all requests
+// List all requests, enriched with VIP flag
 router.get('/', async (req, res, next) => {
   try {
-    const { data, error } = await supabase
+    // Fetch all requests
+    const { data: requests, error: reqErr } = await supabase
       .from('requests')
       .select('*')
       .order('created_at', { ascending: false });
-    if (error) throw error;
-    res.json(data);
+    if (reqErr) throw reqErr;
+
+    // Fetch phone → is_vip mapping
+    const { data: guests, error: guestErr } = await supabase
+      .from('guests')
+      .select('phone_number, is_vip');
+    if (guestErr) throw guestErr;
+
+    const vipMap = {};
+    guests.forEach(g => {
+      vipMap[g.phone_number] = g.is_vip;
+    });
+
+    // Annotate each request
+    const enriched = requests.map(r => ({
+      ...r,
+      is_vip: !!vipMap[r.from_phone]
+    }));
+
+    res.json(enriched);
   } catch (err) {
     next(err);
   }
