@@ -119,7 +119,6 @@ export async function getMissedSLACount(startDate, endDate, hotelId) {
   }).length;
 }
 
-// 📈 Requests per Day
 export async function getRequestsPerDay(startDate, endDate, hotelId) {
   const { data, error } = await supabase
     .from('requests')
@@ -128,11 +127,13 @@ export async function getRequestsPerDay(startDate, endDate, hotelId) {
     .gte('created_at', startDate)
     .lte('created_at', endDate);
   if (error) throw new Error(error.message);
+
   const counts = {};
   data.forEach(r => {
-    const date = r.created_at.slice(0, 10);
-    counts[date] = (counts[date] || 0) + 1;
+    const localDate = new Date(r.created_at).toLocaleDateString('en-CA'); // YYYY-MM-DD
+    counts[localDate] = (counts[localDate] || 0) + 1;
   });
+
   return Object.entries(counts).map(([date, count]) => ({ date, count }));
 }
 
@@ -161,7 +162,11 @@ export async function getCommonRequestWords(startDate, endDate, hotelId) {
   const stopwords = new Set([
     'i','a','the','to','and','is','can','in','of','on','for','me',
     'please','you','get','my','with','need','it','hi','hey','would',
-    'like','that','just','do','we','us','send','want','room','at'
+    'like','that','just','do','we','us','send','want','room','at','but', 
+    'your','this','so','as','if','are','be','by','from','or','not',
+    'no','yes','ok','okay','thanks','thank','hello','good',
+    'morning','afternoon','evening','night','call','text','right','now',
+    'some'
   ]);
 
   const { data, error } = await supabase
@@ -207,14 +212,18 @@ export async function getRepeatRequestRate(startDate, endDate, hotelId) {
     .eq('hotel_id', hotelId)
     .gte('created_at', startDate)
     .lte('created_at', endDate);
+
   if (error) throw new Error(error.message);
-  const total = data.length;
-  const counts = {};
+
+  const guestCounts = {};
   data.forEach(({ from_phone }) => {
-    counts[from_phone] = (counts[from_phone] || 0) + 1;
+    guestCounts[from_phone] = (guestCounts[from_phone] || 0) + 1;
   });
-  const repeat = Object.values(counts).filter(c => c > 1).length;
-  return parseFloat(((repeat / (total || 1)) * 100).toFixed(2));
+
+  const totalGuests = Object.keys(guestCounts).length;
+  const repeatGuests = Object.values(guestCounts).filter(count => count > 1).length;
+
+  return parseFloat(((repeatGuests / (totalGuests || 1)) * 100).toFixed(2));
 }
 
 // Alias for compatibility
