@@ -12,7 +12,9 @@ import { estimateOrderRevenue } from './menuCatalog.js';
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: { enabled: false }
 });
-
+// Sanity check: log the Supabase URL and key prefix to confirm service-role usage
+console.log('🚀 Supabase URL:', supabaseUrl);
+console.log('🔑 Supabase key prefix:', supabaseKey?.slice(0, 5) + '…');
 /** ──────────────────────────────────────────────────────────────
  * REQUESTS CRUD (INSERT + VIP GUEST LOGIC)
  */
