@@ -12,59 +12,63 @@ import { estimateOrderRevenue } from './menuCatalog.js';
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: { enabled: false }
 });
-// Sanity check: log the Supabase URL and key prefix to confirm service-role usage
-console.log('🚀 Supabase URL:', supabaseUrl);
-console.log('🔑 Supabase key prefix:', supabaseKey?.slice(0, 5) + '…');
+
 /** ──────────────────────────────────────────────────────────────
- * REQUESTS CRUD (INSERT + VIP GUEST LOGIC)
+ * REQUESTS CRUD (INSERT + VIP + STAFF GUEST LOGIC)
  */
 export async function insertRequest({ hotel_id, from_phone, message, department, priority, room_number, telnyx_id }) {
-  // Estimate revenue
   const estimated_revenue = estimateOrderRevenue(message);
 
-  // Insert the request
-  const { data: requestRows, error: insertError } = await supabase
+  // 1) Insert the request
+  const { data: requestRows, error: reqErr } = await supabase
     .from('requests')
     .insert([{ hotel_id, from_phone, message, department, priority, room_number, telnyx_id, estimated_revenue }])
     .select();
-  if (insertError) throw new Error(insertError.message);
+  if (reqErr) throw new Error(reqErr.message);
   const request = requestRows[0];
 
-  console.log('📞 Checking guest record for:', from_phone);
+  // 2) Determine staff flag from authorized_numbers
+  const { data: authEntry, error: authErr } = await supabase
+    .from('authorized_numbers')
+    .select('is_staff')
+    .eq('phone', from_phone)
+    .maybeSingle();
+  if (authErr) console.warn('⚠️ Staff lookup failed:', authErr.message);
+  const isStaff = authEntry?.is_staff === true;
 
-  // Upsert guest (insert if new, update if exists)
-  const { data: existingGuest, error: lookupError } = await supabase
+  // 3) Upsert guest with VIP and STAFF flags
+  const { data: existingGuest, error: lookupErr } = await supabase
     .from('guests')
-    .select('total_requests')
+    .select('total_requests, is_vip')
     .eq('phone_number', from_phone)
     .maybeSingle();
-  if (lookupError) {
-    console.error('❌ Guest lookup error:', lookupError.message);
-    throw new Error(lookupError.message);
-  }
+  if (lookupErr) throw new Error(lookupErr.message);
 
   const total_requests = (existingGuest?.total_requests || 0) + 1;
   const is_vip = total_requests >= 10;
 
-  const { data: guestRows, error: upsertError } = await supabase
+  const { data: guestRows, error: upsertErr } = await supabase
     .from('guests')
     .upsert(
       {
-        phone_number: from_phone,
+        phone_number:   from_phone,
         total_requests,
         is_vip,
-        last_seen: new Date()
+        is_staff:       isStaff,
+        last_seen:      new Date()
       },
       { onConflict: ['phone_number'], returning: 'representation' }
     )
     .select()
     .single();
-  if (upsertError) {
-    console.error('❌ Guest upsert failed:', upsertError.message);
-    throw new Error(upsertError.message);
+  if (upsertErr) {
+    console.error('❌ Guest upsert failed:', upsertErr.message);
+    throw new Error(upsertErr.message);
   }
   console.log(
-    existingGuest ? '✅ Guest updated via upsert:' : '🆕 Guest inserted via upsert:',
+    existingGuest
+      ? '✅ Guest updated via upsert:'
+      : '🆕 Guest inserted via upsert:',
     guestRows
   );
 
