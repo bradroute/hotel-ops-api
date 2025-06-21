@@ -1,3 +1,5 @@
+// src/services/supabaseService.js
+
 import ws from 'isomorphic-ws';
 if (typeof globalThis.WebSocket === 'undefined') {
   globalThis.WebSocket = ws;
@@ -15,35 +17,38 @@ export const supabase = createClient(supabaseUrl, supabaseKey, { realtime: { ena
 export async function insertRequest({ hotel_id, from_phone, message, department, priority, room_number, telnyx_id }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
-  const { data, error } = await supabase
+  // Insert the request record
+  const { data: requestData, error: requestErr } = await supabase
     .from('requests')
     .insert([{ hotel_id, from_phone, message, department, priority, room_number, telnyx_id, estimated_revenue }])
     .select();
-  if (error) throw new Error(error.message);
-  const request = data[0];
+  if (requestErr) throw new Error(requestErr.message);
+  const request = requestData[0];
 
   console.log('📞 Checking guest record for:', from_phone);
 
-  const guestLookup = await supabase
+  // Lookup existing guest by phone number
+  const { data: guestData, error: guestErr } = await supabase
     .from('guests')
     .select('*')
     .eq('phone_number', from_phone)
     .maybeSingle();
-  if (guestLookup.error) {
-    console.error('❌ Guest lookup error:', guestLookup.error.message);
-    throw new Error(guestLookup.error.message);
+  if (guestErr) {
+    console.error('❌ Guest lookup error:', guestErr.message);
+    throw new Error(guestErr.message);
   }
 
   let guest = null;
-  if (guestLookup.data) {
+  if (guestData) {
+    // Update existing guest
     console.log('🧑‍🦱 Guest exists. Updating request count...');
-    const total = guestLookup.data.total_requests + 1;
+    const total = guestData.total_requests + 1;
     const is_vip = total >= 10;
 
     const { data: updatedGuest, error: updateErr } = await supabase
       .from('guests')
       .update({ total_requests: total, is_vip, last_seen: new Date() })
-      .eq('phone_number', from_phone)
+      .eq('id', guestData.id)             // ← use the primary key for the update
       .select()
       .single();
     if (updateErr) {
@@ -53,15 +58,16 @@ export async function insertRequest({ hotel_id, from_phone, message, department,
     guest = updatedGuest;
     console.log('✅ Guest updated:', guest);
   } else {
+    // Insert new guest
     console.log('🆕 Guest not found. Inserting new guest...');
-    const { data: newGuest, error: insertErr } = await supabase
+    const { data: newGuest, error: insertGuestErr } = await supabase
       .from('guests')
       .insert({ phone_number: from_phone, total_requests: 1, is_vip: false, last_seen: new Date() })
       .select()
       .single();
-    if (insertErr) {
-      console.error('❌ Guest insert failed:', insertErr.message);
-      throw new Error(insertErr.message);
+    if (insertGuestErr) {
+      console.error('❌ Guest insert failed:', insertGuestErr.message);
+      throw new Error(insertGuestErr.message);
     }
     guest = newGuest;
     console.log('✅ New guest inserted:', guest);
@@ -192,7 +198,7 @@ export async function getCommonRequestWords(startDate, endDate, hotelId) {
     .map(([word, count]) => ({ word, count }));
 }
 
-// 🧑‍💼 VIP Guest Count (is_vip = true, scoped by last_seen)
+// 🧑‍💼 VIP Guest Count
 export async function getVIPGuestCount(startDate, endDate) {
   const { count, error } = await supabase
     .from('guests')
@@ -204,7 +210,7 @@ export async function getVIPGuestCount(startDate, endDate) {
   return count;
 }
 
-// 🔁 Repeat Request %
+// 🔁 Repeat Request %  
 export async function getRepeatRequestRate(startDate, endDate, hotelId) {
   const { data, error } = await supabase
     .from('requests')
@@ -212,7 +218,6 @@ export async function getRepeatRequestRate(startDate, endDate, hotelId) {
     .eq('hotel_id', hotelId)
     .gte('created_at', startDate)
     .lte('created_at', endDate);
-
   if (error) throw new Error(error.message);
 
   const guestCounts = {};
@@ -228,6 +233,8 @@ export async function getRepeatRequestRate(startDate, endDate, hotelId) {
 
 // Alias for compatibility
 export const getMissedSLAs = getMissedSLACount;
+
+// … (rest of your analytics and insight functions follow) …
 
 /** ──────────────────────────────────────────────────────────────
  * PHASE 3: ROI METRICS
