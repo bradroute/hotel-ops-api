@@ -13,7 +13,7 @@ const router = express.Router();
 
 /**
  * Attempt to auto-pair a new phone number to any room that:
- * - Has at least one active guest (expires_at > now)
+ * - Has at least one active guest (expires_at > now or expires_at IS NULL)
  * - Has fewer than 4 devices currently paired
  */
 async function tryAutoPair(from_phone) {
@@ -30,7 +30,7 @@ async function tryAutoPair(from_phone) {
       .from('authorized_numbers')
       .select('expires_at')
       .eq('room_number', slot.room_number)
-      .gt('expires_at', now);
+      .or('expires_at.gt.' + now + ',expires_at.is.null');
 
     if (activeGuests.length > 0 && slot.current_count < slot.max_devices) {
       // Pair this new phone to the room
@@ -79,7 +79,11 @@ router.post('/', async (req, res) => {
       .single();
 
     let isAuthorized = false;
-    if (existing && existing.expires_at > now) {
+    // Treat expires_at = null as always valid
+    if (
+      existing &&
+      (existing.expires_at === null || existing.expires_at > now)
+    ) {
       isAuthorized = true;
     } else {
       // Try auto-pairing up to 4 phones per room
@@ -131,7 +135,7 @@ router.post('/', async (req, res) => {
     });
     console.log('🆕 Request inserted:', inserted);
 
-    // Note: confirmation SMS is now only sent on acknowledge
+    // Note: confirmation SMS is only sent on acknowledge
 
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
