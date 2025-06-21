@@ -1,4 +1,4 @@
-// sms.js
+// src/routes/sms.js
 import express from 'express';
 import { supabase, insertRequest } from '../services/supabaseService.js';
 import { sendRejectionSms, sendConfirmationSms } from '../services/telnyxService.js';
@@ -131,12 +131,7 @@ router.post('/', async (req, res) => {
     });
     console.log('🆕 Request inserted:', inserted);
 
-    // Optionally, send a confirmation SMS to the guest
-    try {
-      await sendConfirmationSms(from_phone);
-    } catch (err) {
-      console.error('❌ Confirmation SMS failed:', err);
-    }
+    // Note: confirmation SMS is now only sent on acknowledge
 
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
@@ -153,8 +148,14 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
     // Send confirmation back to guest
-    const smsResult = await sendConfirmationSms(updated.from_phone);
-    return res.status(200).json({ success: true, telnyx: smsResult });
+    try {
+      const smsResult = await sendConfirmationSms(updated.from_phone);
+      console.log('📨 Confirmation SMS sent:', smsResult);
+    } catch (err) {
+      console.error(`❌ Failure sending confirmation for request ${id}:`, err);
+    }
+
+    return res.status(200).json({ success: true });
   } catch (err) {
     next(err);
   }
