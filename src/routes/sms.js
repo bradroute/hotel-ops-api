@@ -11,17 +11,9 @@ import {
 
 const router = express.Router();
 
-/**
- * Attempt to auto-pair a new phone number to any room based solely on NFC authorization:
- * - Has at least one active authorized number (expires_at > now OR expires_at IS NULL)
- * - Fewer than the maximum devices currently paired to that room
- */
 async function tryAutoPair(from_phone) {
   const now = new Date().toISOString();
-
-  const { data: slots } = await supabase
-    .from('room_device_slots')
-    .select('*');
+  const { data: slots } = await supabase.from('room_device_slots').select('*');
 
   for (const slot of slots) {
     const { data: activeGuests } = await supabase
@@ -56,22 +48,15 @@ router.post('/', async (req, res) => {
     const message    = payload.text;
     const telnyxId   = payload.id;
 
-    // 1) Basic validation
-    if (!from_phone || !to || !message) {
-      return res.status(200).send('Ignored: missing fields');
-    }
-    if (from_phone === process.env.TELNYX_NUMBER) {
-      return res.status(200).send('Ignored: outgoing SMS');
-    }
-    if (await findByTelnyxId(telnyxId)) {
-      return res.status(200).send('Ignored: duplicate SMS');
-    }
+    if (!from_phone || !to || !message) return res.status(200).send('Ignored: missing fields');
+    if (from_phone === process.env.TELNYX_NUMBER) return res.status(200).send('Ignored: outgoing SMS');
+    if (await findByTelnyxId(telnyxId)) return res.status(200).send('Ignored: duplicate SMS');
 
     const now = new Date().toISOString();
     let isAuthorized = false;
-    let isStaff      = false;
+    let isStaff = false;
 
-    // 2) Check for staff authorization in authorized_numbers
+    // 🔒 Check if staff via authorized_numbers
     try {
       const { data: authNum, error: authErr } = await supabase
         .from('authorized_numbers')
@@ -80,13 +65,13 @@ router.post('/', async (req, res) => {
         .single();
       if (!authErr && authNum?.is_staff) {
         isAuthorized = true;
-        isStaff      = true;
+        isStaff = true;
       }
     } catch (err) {
-      console.warn('⚠️ Staff lookup failed:', err.message);
+      console.warn('⚠️ Staff check failed:', err.message);
     }
 
-    // 3) Guest authorization via authorized_numbers or auto-pair fallback
+    // 🛎 Guest fallback auth
     if (!isAuthorized) {
       const { data: existing } = await supabase
         .from('authorized_numbers')
@@ -94,17 +79,14 @@ router.post('/', async (req, res) => {
         .eq('phone', from_phone)
         .single();
 
-      if (
-        existing &&
-        (existing.expires_at === null || existing.expires_at > now)
-      ) {
+      if (existing && (existing.expires_at === null || existing.expires_at > now)) {
         isAuthorized = true;
       } else {
         isAuthorized = await tryAutoPair(from_phone);
       }
     }
 
-    // 4) Reject unauthorized messages
+    // 🚫 Block unauthorized
     if (!isAuthorized) {
       console.log('🚫 Blocked SMS from unauthorized phone:', from_phone);
       await sendRejectionSms(
@@ -114,31 +96,29 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: unauthorized phone');
     }
 
-    // 5) Identify hotel by destination number
+    // 🏨 Hotel match
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
       .eq('phone_number', to)
       .single();
-    if (hotelErr || !hotel) {
-      return res.status(200).send('Ignored: unknown hotel number');
-    }
+    if (hotelErr || !hotel) return res.status(200).send('Ignored: unknown hotel number');
     const hotel_id = hotel.id;
 
-    // 6) Classify message
+    // 🧠 Classification
     let department = 'General';
-    let priority   = 'Normal';
+    let priority = 'Normal';
     let room_number = null;
     try {
       const result = await classify(message);
-      department   = result.department;
-      priority     = result.priority;
-      room_number  = result.room_number;
+      department = result.department;
+      priority = result.priority;
+      room_number = result.room_number;
     } catch (err) {
-      console.warn('⚠️ Classification failed, using defaults.', err);
+      console.warn('⚠️ Classification failed:', err);
     }
 
-    // 7) Handle VIP and analytics logic (only for non-staff)
+    // ⭐ Guest tracking & VIP (ONLY for non-staff)
     let isVip = false;
     if (!isStaff) {
       try {
@@ -176,7 +156,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 8) Insert the request with flags
+    // ✅ Final insert
     const inserted = await insertRequest({
       hotel_id,
       from_phone,
@@ -201,16 +181,13 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
     const updated = await acknowledgeRequestById(id);
-    if (!updated)
-      return res
-        .status(404)
-        .json({ success: false, message: 'Request not found' });
+    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
     try {
       const smsResult = await sendConfirmationSms(updated.from_phone);
       console.log('📨 Confirmation SMS sent:', smsResult);
     } catch (err) {
-      console.error(`❌ Failure sending confirmation for request ${id}:`, err);
+      console.error(`❌ Failed to send confirmation for ${id}:`, err);
     }
 
     return res.status(200).json({ success: true });
@@ -223,14 +200,9 @@ router.patch('/:id/complete', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
     const updated = await completeRequestById(id);
-    if (!updated)
-      return res
-        .status(404)
-        .json({ success: false, message: 'Request not found' });
+    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
-    return res
-      .status(200)
-      .json({ success: true, message: 'Request completed' });
+    return res.status(200).json({ success: true, message: 'Request completed' });
   } catch (err) {
     next(err);
   }
