@@ -17,30 +17,47 @@ router.get('/', async (req, res, next) => {
       .from('requests')
       .select('*')
       .order('created_at', { ascending: false });
-    if (reqErr) throw reqErr;
+    if (reqErr) {
+      console.error('❌ Error fetching requests:', reqErr.message);
+      throw reqErr;
+    }
 
     const { data: guests, error: guestErr } = await supabase
       .from('guests')
-      .select('phone_number, is_vip, is_staff');
-    if (guestErr) throw guestErr;
+      .select('phone_number, is_vip');
+    if (guestErr) {
+      console.error('❌ Error fetching guests:', guestErr.message);
+      throw guestErr;
+    }
+
+    const { data: staff, error: staffErr } = await supabase
+      .from('authorized_numbers')
+      .select('phone, is_staff');
+    if (staffErr) {
+      console.error('❌ Error fetching staff:', staffErr.message);
+      throw staffErr;
+    }
 
     const guestMap = {};
     guests.forEach(g => {
-      guestMap[g.phone_number] = {
-        is_vip: g.is_vip,
-        is_staff: g.is_staff
-      };
+      guestMap[g.phone_number] = { is_vip: g.is_vip };
+    });
+
+    const staffMap = {};
+    staff.forEach(s => {
+      if (s.is_staff) staffMap[s.phone] = true;
     });
 
     const enriched = requests.map(r => ({
       ...r,
       is_vip: !!guestMap[r.from_phone]?.is_vip,
-      is_staff: !!guestMap[r.from_phone]?.is_staff
+      is_staff: !!staffMap[r.from_phone]
     }));
 
     res.json(enriched);
   } catch (err) {
-    next(err);
+    console.error('❌ Enrichment failure:', err.message);
+    res.status(500).json({ error: err.message || 'Unknown server error' });
   }
 });
 
