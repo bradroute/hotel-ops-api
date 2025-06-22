@@ -14,65 +14,42 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 /** ──────────────────────────────────────────────────────────────
- * REQUESTS CRUD (INSERT + VIP + STAFF GUEST LOGIC)
+ * REQUESTS CRUD
  */
-export async function insertRequest({ hotel_id, from_phone, message, department, priority, room_number, telnyx_id }) {
+export async function insertRequest({
+  hotel_id,
+  from_phone,
+  message,
+  department,
+  priority,
+  room_number,
+  telnyx_id,
+  is_staff,
+  is_vip
+}) {
   const estimated_revenue = estimateOrderRevenue(message);
 
-  // 1) Insert the request
+  // Insert the request with staff & VIP flags
   const { data: requestRows, error: reqErr } = await supabase
     .from('requests')
-    .insert([{ hotel_id, from_phone, message, department, priority, room_number, telnyx_id, estimated_revenue }])
+    .insert([
+      {
+        hotel_id,
+        from_phone,
+        message,
+        department,
+        priority,
+        room_number,
+        telnyx_id,
+        estimated_revenue,
+        is_staff,
+        is_vip
+      }
+    ])
     .select();
   if (reqErr) throw new Error(reqErr.message);
-  const request = requestRows[0];
 
-  // 2) Determine staff flag from authorized_numbers
-  const { data: authEntry, error: authErr } = await supabase
-    .from('authorized_numbers')
-    .select('is_staff')
-    .eq('phone', from_phone)
-    .maybeSingle();
-  if (authErr) console.warn('⚠️ Staff lookup failed:', authErr.message);
-  const isStaff = authEntry?.is_staff === true;
-
-  // 3) Upsert guest with VIP and STAFF flags
-  const { data: existingGuest, error: lookupErr } = await supabase
-    .from('guests')
-    .select('total_requests, is_vip')
-    .eq('phone_number', from_phone)
-    .maybeSingle();
-  if (lookupErr) throw new Error(lookupErr.message);
-
-  const total_requests = (existingGuest?.total_requests || 0) + 1;
-  const is_vip = total_requests >= 10;
-
-  const { data: guestRows, error: upsertErr } = await supabase
-    .from('guests')
-    .upsert(
-      {
-        phone_number:   from_phone,
-        total_requests,
-        is_vip,
-        is_staff:       isStaff,
-        last_seen:      new Date()
-      },
-      { onConflict: ['phone_number'], returning: 'representation' }
-    )
-    .select()
-    .single();
-  if (upsertErr) {
-    console.error('❌ Guest upsert failed:', upsertErr.message);
-    throw new Error(upsertErr.message);
-  }
-  console.log(
-    existingGuest
-      ? '✅ Guest updated via upsert:'
-      : '🆕 Guest inserted via upsert:',
-    guestRows
-  );
-
-  return request;
+  return requestRows[0];
 }
 
 /** ──────────────────────────────────────────────────────────────
