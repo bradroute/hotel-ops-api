@@ -50,11 +50,11 @@ async function tryAutoPair(from_phone) {
 
 router.post('/', async (req, res) => {
   try {
-    const payload = req.body?.data?.payload || {};
+    const payload    = req.body?.data?.payload || {};
     const from_phone = payload.from?.phone_number;
-    const to = payload.to?.[0]?.phone_number;
-    const message = payload.text;
-    const telnyxId = payload.id;
+    const to         = payload.to?.[0]?.phone_number;
+    const message    = payload.text;
+    const telnyxId   = payload.id;
 
     // 1) Basic validation
     if (!from_phone || !to || !message) {
@@ -67,25 +67,26 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: duplicate SMS');
     }
 
-    // 2) Authorization check with staff override
     const now = new Date().toISOString();
     let isAuthorized = false;
+    let isStaff      = false;
 
-    // Staff override: check guests table
+    // 2) Check for staff authorization in authorized_numbers
     try {
-      const { data: guest, error: guestErr } = await supabase
-        .from('guests')
+      const { data: authNum, error: authErr } = await supabase
+        .from('authorized_numbers')
         .select('is_staff')
-        .eq('phone_number', from_phone)
+        .eq('phone', from_phone)
         .single();
-      if (!guestErr && guest?.is_staff) {
+      if (!authErr && authNum?.is_staff) {
         isAuthorized = true;
+        isStaff      = true;
       }
     } catch (err) {
       console.warn('⚠️ Staff lookup failed:', err.message);
     }
 
-    // Authorized numbers / auto-pair fallback
+    // 3) Guest authorization via authorized_numbers or auto-pair fallback
     if (!isAuthorized) {
       const { data: existing } = await supabase
         .from('authorized_numbers')
@@ -103,6 +104,7 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // 4) Reject unauthorized messages
     if (!isAuthorized) {
       console.log('🚫 Blocked SMS from unauthorized phone:', from_phone);
       await sendRejectionSms(
@@ -112,7 +114,7 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: unauthorized phone');
     }
 
-    // 3) Identify hotel by destination number
+    // 5) Identify hotel by destination number
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
@@ -123,20 +125,58 @@ router.post('/', async (req, res) => {
     }
     const hotel_id = hotel.id;
 
-    // 4) Classify message
+    // 6) Classify message
     let department = 'General';
-    let priority = 'Normal';
+    let priority   = 'Normal';
     let room_number = null;
     try {
       const result = await classify(message);
-      department = result.department;
-      priority = result.priority;
-      room_number = result.room_number;
+      department   = result.department;
+      priority     = result.priority;
+      room_number  = result.room_number;
     } catch (err) {
       console.warn('⚠️ Classification failed, using defaults.', err);
     }
 
-    // 5) Insert the request
+    // 7) Handle VIP and analytics logic (only for non-staff)
+    let isVip = false;
+    if (!isStaff) {
+      try {
+        const { data: guest } = await supabase
+          .from('guests')
+          .select('total_requests')
+          .eq('phone_number', from_phone)
+          .single();
+
+        if (guest) {
+          const newTotal = guest.total_requests + 1;
+          isVip = newTotal > 10;
+
+          await supabase
+            .from('guests')
+            .update({
+              total_requests: newTotal,
+              last_seen: new Date().toISOString(),
+              is_vip: isVip,
+            })
+            .eq('phone_number', from_phone);
+        } else {
+          await supabase
+            .from('guests')
+            .insert({
+              phone_number: from_phone,
+              total_requests: 1,
+              last_seen: new Date().toISOString(),
+              is_vip: false,
+              is_staff: false,
+            });
+        }
+      } catch (err) {
+        console.warn('⚠️ Guest tracking failed:', err.message);
+      }
+    }
+
+    // 8) Insert the request with flags
     const inserted = await insertRequest({
       hotel_id,
       from_phone,
@@ -144,17 +184,16 @@ router.post('/', async (req, res) => {
       department,
       priority,
       room_number,
+      is_staff: isStaff,
+      is_vip: isVip,
       telnyx_id: telnyxId,
     });
     console.log('🆕 Request inserted:', inserted);
-
-    // Note: confirmation SMS is only sent on acknowledge
 
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
   }
 
-  // Always acknowledge to Telnyx
   return res.status(200).json({ success: true });
 });
 
@@ -167,7 +206,6 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
         .status(404)
         .json({ success: false, message: 'Request not found' });
 
-    // Send confirmation back to guest
     try {
       const smsResult = await sendConfirmationSms(updated.from_phone);
       console.log('📨 Confirmation SMS sent:', smsResult);
@@ -189,7 +227,10 @@ router.patch('/:id/complete', async (req, res, next) => {
       return res
         .status(404)
         .json({ success: false, message: 'Request not found' });
-    return res.status(200).json({ success: true, message: 'Request completed' });
+
+    return res
+      .status(200)
+      .json({ success: true, message: 'Request completed' });
   } catch (err) {
     next(err);
   }
