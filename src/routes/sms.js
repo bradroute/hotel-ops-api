@@ -12,20 +12,18 @@ import {
 const router = express.Router();
 
 /**
- * Attempt to auto-pair a new phone number to any room that:
- * - Has at least one active guest (expires_at > now or expires_at IS NULL)
- * - Has fewer than 4 devices currently paired
+ * Attempt to auto-pair a new phone number to any room based solely on NFC authorization:
+ * - Has at least one active authorized number (expires_at > now OR expires_at IS NULL)
+ * - Fewer than the maximum devices currently paired to that room
  */
 async function tryAutoPair(from_phone) {
   const now = new Date().toISOString();
 
-  // Fetch all room slots
   const { data: slots } = await supabase
     .from('room_device_slots')
     .select('*');
 
   for (const slot of slots) {
-    // Check if the room has at least one active guest
     const { data: activeGuests } = await supabase
       .from('authorized_numbers')
       .select('expires_at')
@@ -33,7 +31,6 @@ async function tryAutoPair(from_phone) {
       .or('expires_at.gt.' + now + ',expires_at.is.null');
 
     if (activeGuests.length > 0 && slot.current_count < slot.max_devices) {
-      // Pair this new phone to the room
       const expires_at = activeGuests[0].expires_at;
       await supabase.from('authorized_numbers').insert({
         phone: from_phone,
@@ -70,24 +67,40 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: duplicate SMS');
     }
 
-    // 2) Authorization check
+    // 2) Authorization check with staff override
     const now = new Date().toISOString();
-    const { data: existing } = await supabase
-      .from('authorized_numbers')
-      .select('room_number, expires_at')
-      .eq('phone', from_phone)
-      .single();
-
     let isAuthorized = false;
-    // Treat expires_at = null as always valid
-    if (
-      existing &&
-      (existing.expires_at === null || existing.expires_at > now)
-    ) {
-      isAuthorized = true;
-    } else {
-      // Try auto-pairing up to 4 phones per room
-      isAuthorized = await tryAutoPair(from_phone);
+
+    // Staff override: check guests table
+    try {
+      const { data: guest, error: guestErr } = await supabase
+        .from('guests')
+        .select('is_staff')
+        .eq('phone_number', from_phone)
+        .single();
+      if (!guestErr && guest?.is_staff) {
+        isAuthorized = true;
+      }
+    } catch (err) {
+      console.warn('⚠️ Staff lookup failed:', err.message);
+    }
+
+    // Authorized numbers / auto-pair fallback
+    if (!isAuthorized) {
+      const { data: existing } = await supabase
+        .from('authorized_numbers')
+        .select('room_number, expires_at')
+        .eq('phone', from_phone)
+        .single();
+
+      if (
+        existing &&
+        (existing.expires_at === null || existing.expires_at > now)
+      ) {
+        isAuthorized = true;
+      } else {
+        isAuthorized = await tryAutoPair(from_phone);
+      }
     }
 
     if (!isAuthorized) {
@@ -149,7 +162,10 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
     const updated = await acknowledgeRequestById(id);
-    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
+    if (!updated)
+      return res
+        .status(404)
+        .json({ success: false, message: 'Request not found' });
 
     // Send confirmation back to guest
     try {
@@ -169,7 +185,10 @@ router.patch('/:id/complete', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
     const updated = await completeRequestById(id);
-    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
+    if (!updated)
+      return res
+        .status(404)
+        .json({ success: false, message: 'Request not found' });
     return res.status(200).json({ success: true, message: 'Request completed' });
   } catch (err) {
     next(err);
