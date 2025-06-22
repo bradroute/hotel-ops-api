@@ -84,7 +84,7 @@ router.post('/:id/complete', async (req, res, next) => {
 // GET all notes for a given request
 router.get('/:id/notes', async (req, res, next) => {
   try {
-    const id = req.params.id.trim();
+    const id = parseInt(req.params.id.trim(), 10);
     const { data, error } = await supabase
       .from('notes')
       .select('*')
@@ -97,10 +97,11 @@ router.get('/:id/notes', async (req, res, next) => {
   }
 });
 
-// Add new note to request
+// Add new note to request (with debug logging and .select())
 router.post('/:id/notes', async (req, res, next) => {
+  console.log('📝 [notes] POST body:', req.body, 'params:', req.params);
   try {
-    const id = req.params.id.trim();
+    const id = parseInt(req.params.id.trim(), 10);
     const { content } = req.body;
     if (!content) {
       return res.status(400).json({ error: 'Note content is required.' });
@@ -110,22 +111,26 @@ router.post('/:id/notes', async (req, res, next) => {
       .insert({ request_id: id, content, created_at: new Date().toISOString() })
       .select();
     if (error) throw error;
+    console.log('📝 [notes] Created note:', data);
     res.json({ success: true, note: data[0] });
   } catch (err) {
     next(err);
   }
 });
 
-// DELETE note from request
+// DELETE note from request (with debug logging)
 router.delete('/:id/notes/:noteId', async (req, res, next) => {
+  console.log('🗑 [notes] DELETE params:', req.params);
   try {
-    const { id, noteId } = req.params;
+    const id = parseInt(req.params.id, 10);
+    const noteId = parseInt(req.params.noteId, 10);
     const { error } = await supabase
       .from('notes')
       .delete()
       .eq('id', noteId)
       .eq('request_id', id);
     if (error) throw error;
+    console.log(`🗑 [notes] Deleted note ${noteId} from request ${id}`);
     res.json({ success: true });
   } catch (err) {
     next(err);
