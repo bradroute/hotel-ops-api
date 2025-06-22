@@ -63,22 +63,34 @@ router.post('/', async (req, res) => {
     let isAuthorized = false;
     let isStaff      = false;
 
-    // 2) STAFF CHECK (authorized_numbers.is_staff)
+    // 2) STAFF CHECK — look in both tables
     try {
-      const { data: authNum, error: authErr } = await supabase
+      // a) authorized_numbers table
+      const { data: authNum } = await supabase
         .from('authorized_numbers')
         .select('is_staff')
         .eq('phone', from_phone)
         .single();
-      if (!authErr && authNum?.is_staff) {
+      if (authNum?.is_staff) {
+        isStaff = true;
         isAuthorized = true;
-        isStaff      = true;
+      } else {
+        // b) guests table fallback
+        const { data: guestStaff } = await supabase
+          .from('guests')
+          .select('is_staff')
+          .eq('phone_number', from_phone)
+          .single();
+        if (guestStaff?.is_staff) {
+          isStaff = true;
+          isAuthorized = true;
+        }
       }
     } catch (err) {
-      console.warn('⚠️ Staff check failed:', err.message);
+      console.warn('⚠️ Staff lookup failed:', err.message);
     }
 
-    // 3) GUEST AUTH (fallback to authorized_numbers or auto-pair)
+    // 3) GUEST AUTH (only if not already authorized as staff)
     if (!isAuthorized) {
       const { data: existing } = await supabase
         .from('authorized_numbers')
@@ -130,7 +142,7 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ Classification failed:', err);
     }
 
-    // 7) GUEST TRACKING & VIP (ONLY for non-staff)
+    // 7) GUEST TRACKING & VIP (ONLY if NOT staff)
     let isVip = false;
     if (!isStaff) {
       try {
@@ -143,15 +155,19 @@ router.post('/', async (req, res) => {
         if (guest) {
           const newTotal = guest.total_requests + 1;
           isVip = newTotal > 10;
+
+          // update counts + enforce is_staff=false
           await supabase
             .from('guests')
             .update({
               total_requests: newTotal,
               last_seen:      now,
               is_vip:         isVip,
+              is_staff:       false,
             })
             .eq('phone_number', from_phone);
         } else {
+          // first request from this guest
           await supabase
             .from('guests')
             .insert({
@@ -167,7 +183,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 8) INSERT REQUEST (with staff & VIP flags)
+    // 8) INSERT REQUEST (with both flags)
     const inserted = await insertRequest({
       hotel_id,
       from_phone,
