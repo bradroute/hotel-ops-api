@@ -1,36 +1,93 @@
-// src/services/classifier.js
-
 import OpenAI from 'openai';
 import { openAIApiKey } from '../config/index.js';
+import { getEnabledDepartments as fetchEnabled } from './supabaseService.js';
 
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
-export async function classify(text) {
-  const prompt = `
-You are a hotel task classifier.
+// Always enforce specific keywords to precise departments
+const keywordMap = [
+  { keywords: ['wifi','wi-fi','internet','network'], department: 'IT' },
+  { keywords: ['massage','spa','treatment'], department: 'Spa' },
+  { keywords: ['bags','luggage','suitcase'], department: 'Bellhop' },
+  { keywords: ['towel','sheets','cleaning'], department: 'Housekeeping' },
+  { keywords: ['broken','leak','repair','fix'], department: 'Maintenance' },
+  { keywords: ['car','valet','parking'], department: 'Valet' },
+  { keywords: ['recommend','recommendation','suggest','nearby'], department: 'Concierge' },
+  { keywords: ['reservation','book','cancel'], department: 'Reservations' },
+  { keywords: ['laundry','dry clean','pressing'], department: 'Laundry' },
+  { keywords: ['security','lost','safety'], department: 'Security' },
+  { keywords: ['restaurant','menu','drink'], department: 'Food & Beverage' }
+];
 
-Given the guest message below, return JSON only. Do not include any markdown, code blocks, or explanations.
+function overrideDepartment(text) {
+  const lower = text.toLowerCase();
+  for (const { keywords, department } of keywordMap) {
+    if (keywords.some(k => lower.includes(k))) return department;
+  }
+  return null;
+}
 
-Output JSON with these fields:
-- "department" (Housekeeping, Maintenance, Front Desk, Valet, Room Service)
-- "priority" (urgent, normal, low)
-- "room_number" (extract the room number if mentioned, otherwise return null)
+export async function classify(text, hotelId) {
+  // Get currently enabled departments
+  const enabled = await fetchEnabled(hotelId);
+  const departments = enabled.length ? enabled : [
+    'Front Desk','Housekeeping','Maintenance','Room Service','Valet',
+    'Concierge','Spa','Bellhop','Security','Events',
+    'Laundry','IT','Engineering','Food & Beverage','Reservations'
+  ];
+  const list = departments.join(', ');
 
-Message: "${text}"
-`;
+  const prompt = `You are a hotel task classifier. Choose the single most appropriate department from: ${list}.
 
-  const response = await openai.chat.completions.create({
+- IT: WiFi, internet or tech support.
+- Bellhop: luggage, bags or escorting.
+- Valet: cars or parking.
+- Maintenance: broken, repair, leak.
+- Room Service: food/drinks to room.
+- Concierge: recommendations or arrangements.
+- Spa: massages or wellness.
+- Reservations: booking or cancellations.
+- Laundry: washing or dry cleaning.
+- Security: safety or disturbances.
+- Food & Beverage: restaurants or bar queries.
+- Events: meeting or event space.
+- Housekeeping: towels, sheets, room cleaning.
+- Engineering: HVAC, plumbing, elevator.
+- Front Desk: general inquiries or fallback.
+
+Respond ONLY with JSON:
+{ "department": "<one of: ${list}>", "priority": "urgent|normal|low", "room_number": "<if found, else null>" }
+
+Message: "${text}"`;
+
+  const res = await openai.chat.completions.create({
     model: 'gpt-4o',
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.2
   });
 
-  try {
-    const content = response.choices[0].message.content;
-    const { department, priority, room_number } = JSON.parse(content);
-    return { department, priority, room_number };
-  } catch (e) {
-    console.error('Classification failed:', e);
-    return { department: 'Front Desk', priority: 'normal', room_number: null };
+  const raw = res.choices[0].message.content;
+  console.log('🔍 RAW CLASSIFIER OUTPUT:\n', raw);
+
+  // Extract JSON between outer braces
+  const match = raw.match(/\{[\s\S]*\}/);
+  const json = match ? match[0] : raw;
+  let parsed;
+  try { parsed = JSON.parse(json); } catch (e) {
+    console.error('Parsing error:', e);
+    parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
+
+  // Override by keyword
+  const forced = overrideDepartment(text);
+  if (forced) parsed.department = forced;
+
+  // Ensure department is enabled
+  if (!departments.includes(parsed.department)) parsed.department = 'Front Desk';
+
+  return {
+    department: parsed.department,
+    priority: parsed.priority,
+    room_number: parsed.room_number
+  };
 }

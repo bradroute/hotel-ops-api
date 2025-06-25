@@ -1,5 +1,3 @@
-// src/services/supabaseService.js
-
 import ws from 'isomorphic-ws';
 if (typeof globalThis.WebSocket === 'undefined') {
   globalThis.WebSocket = ws;
@@ -29,344 +27,239 @@ export async function insertRequest({
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
-  // Insert the request with staff & VIP flags
   const { data: requestRows, error: reqErr } = await supabase
     .from('requests')
-    .insert([
-      {
-        hotel_id,
-        from_phone,
-        message,
-        department,
-        priority,
-        room_number,
-        telnyx_id,
-        estimated_revenue,
-        is_staff,
-        is_vip
-      }
-    ])
+    .insert([{ hotel_id, from_phone, message, department, priority, room_number, telnyx_id, estimated_revenue, is_staff, is_vip }])
     .select();
   if (reqErr) throw new Error(reqErr.message);
-
   return requestRows[0];
+}
+
+export async function fetchAllRequests() {
+  const { data: requests, error: reqErr } = await supabase.from('requests').select('*').order('created_at', { ascending: false });
+  if (reqErr) throw new Error(reqErr.message);
+
+  const { data: guests, error: guestErr } = await supabase.from('guests').select('phone_number, is_vip');
+  if (guestErr) throw new Error(guestErr.message);
+
+  const { data: staff, error: staffErr } = await supabase.from('authorized_numbers').select('phone, is_staff');
+  if (staffErr) throw new Error(staffErr.message);
+
+  const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g.is_vip]));
+  const staffSet = new Set(staff.filter(s => s.is_staff).map(s => s.phone));
+
+  return requests.map(r => ({
+    ...r,
+    is_vip: !!guestMap[r.from_phone],
+    is_staff: staffSet.has(r.from_phone)
+  }));
 }
 
 /** ──────────────────────────────────────────────────────────────
  * ANALYTICS CORE FUNCTIONS (PHASE 1 + 2)
  */
 
-// Total number of requests for a hotel in a date range
 export async function getTotalRequests(startDate, endDate, hotelId) {
-  const { count, error } = await supabase
-    .from('requests')
-    .select('id', { head: true, count: 'exact' })
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { count, error } = await supabase.from('requests').select('id', { head: true, count: 'exact' }).eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
   return count;
 }
 
-// Average time to acknowledge (minutes)
 export async function getAvgAckTime(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('created_at, acknowledged_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('created_at, acknowledged_at').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
-  const times = data
-    .filter(r => r.created_at && r.acknowledged_at)
-    .map(r => (new Date(r.acknowledged_at) - new Date(r.created_at)) / 60000);
+  const times = data.filter(r => r.created_at && r.acknowledged_at).map(r => (new Date(r.acknowledged_at) - new Date(r.created_at)) / 60000);
   if (!times.length) return 0;
-  const avg = times.reduce((a, b) => a + b, 0) / times.length;
-  return parseFloat(avg.toFixed(2));
+  return parseFloat((times.reduce((a,b) => a+b, 0)/times.length).toFixed(2));
 }
 
-// Missed SLA count (>10 minutes)
 export async function getMissedSLACount(startDate, endDate, hotelId) {
   const SLA_MS = 10 * 60 * 1000;
-  const { data, error } = await supabase
-    .from('requests')
-    .select('created_at, acknowledged_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('created_at, acknowledged_at').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
-  return data.filter(r => !r.acknowledged_at || (new Date(r.acknowledged_at) - new Date(r.created_at) > SLA_MS)).length;
+  return data.filter(r => !r.acknowledged_at || (new Date(r.acknowledged_at)-new Date(r.created_at) > SLA_MS)).length;
 }
 
-// Requests per day
 export async function getRequestsPerDay(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('created_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('created_at').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
   const counts = {};
-  data.forEach(r => {
-    const day = r.created_at.slice(0, 10);
-    counts[day] = (counts[day] || 0) + 1;
-  });
-  return Object.entries(counts).map(([date, count]) => ({ date, count }));
+  data.forEach(r => { const day = r.created_at.slice(0,10); counts[day] = (counts[day]||0)+1; });
+  return Object.entries(counts).map(([date,count]) => ({ date, count }));
 }
 
-// Top 3 departments by request count
 export async function getTopDepartments(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('department')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('department').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
   const tally = {};
-  data.forEach(({ department }) => {
-    const d = department || 'Unknown';
-    tally[d] = (tally[d] || 0) + 1;
-  });
-  return Object.entries(tally)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([name, value]) => ({ name, value }));
+  data.forEach(({ department }) => { const d = department||'Unknown'; tally[d] = (tally[d]||0)+1; });
+  return Object.entries(tally).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([name,value]) => ({ name, value }));
 }
 
-// Most common words in requests
 export async function getCommonRequestWords(startDate, endDate, hotelId) {
-  const stopwords = new Set([
-    'i','a','the','to','and','is','can','in','of','on','for','me',
-    'please','you','get','my','with','need','it','hi','hey','would',
-    'like','that','just','do','we','us','send','want','room','at','but',
-    'your','this','so','as','if','are','be','by','from','or','not',
-    'no','yes','ok','okay','thanks','thank','hello','good',
-    'morning','afternoon','evening','night','call','text','right','now',
-    'some'
-  ]);
-  const { data, error } = await supabase
-    .from('requests')
-    .select('message')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const stopwords = new Set([ 'i','a','the','to','and','is','can','in','of','on','for','me','please','you','get','my','with','need','it','hi','hey','would','like','that','just','do','we','us','send','want','room','at','but','your','this','so','as','if','are','be','by','from','or','not','no','yes','ok','okay','thanks','thank','hello','good','morning','afternoon','evening','night','call','text','right','now','some' ]);
+  const { data, error } = await supabase.from('requests').select('message').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
   const wordCounts = {};
   data.forEach(({ message }) => {
-    message?.toLowerCase().split(/\W+/).forEach(word => {
-      if (word.length >= 3 && !stopwords.has(word) && !/\d/.test(word)) {
-        wordCounts[word] = (wordCounts[word] || 0) + 1;
-      }
+    message.toLowerCase().split(/\W+/).forEach(word => {
+      if (word.length>=3 && !stopwords.has(word) && !/\d/.test(word)) wordCounts[word] = (wordCounts[word]||0)+1;
     });
   });
-  return Object.entries(wordCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([word, count]) => ({ word, count }));
+  return Object.entries(wordCounts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([word,count]) => ({ word, count }));
 }
 
-// VIP guest count
 export async function getVIPGuestCount(startDate, endDate) {
-  const { count, error } = await supabase
-    .from('guests')
-    .select('id', { head: true, count: 'exact' })
-    .eq('is_vip', true)
-    .gte('last_seen', startDate)
-    .lte('last_seen', endDate);
+  const { count, error } = await supabase.from('guests').select('id',{ head: true, count: 'exact' }).eq('is_vip', true).gte('last_seen', startDate).lte('last_seen', endDate);
   if (error) throw new Error(error.message);
   return count;
 }
 
-// Repeat request rate
 export async function getRepeatRequestRate(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('from_phone')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('from_phone').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
-  const guestCounts = {};
-  data.forEach(({ from_phone }) => {
-    guestCounts[from_phone] = (guestCounts[from_phone] || 0) + 1;
-  });
-  const totalGuests = Object.keys(guestCounts).length;
-  const repeatGuests = Object.values(guestCounts).filter(c => c > 1).length;
-  return parseFloat(((repeatGuests / (totalGuests || 1)) * 100).toFixed(2));
+  const counts = {};
+  data.forEach(({ from_phone }) => counts[from_phone] = (counts[from_phone]||0)+1);
+  const totalGuests = Object.keys(counts).length;
+  const repeatGuests = Object.values(counts).filter(c=>c>1).length;
+  return parseFloat(((repeatGuests/(totalGuests||1))*100).toFixed(2));
 }
 
-// Alias
 export const getMissedSLAs = getMissedSLACount;
 
 /** ──────────────────────────────────────────────────────────────
  * PHASE 3: ROI METRICS
  */
-
-// Estimated revenue
 export async function getEstimatedRevenue(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('estimated_revenue')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('estimated_revenue').eq('hotel_id', hotelId).gte('created_at', startDate).lte('created_at', endDate);
   if (error) throw new Error(error.message);
-  return data.reduce((sum, r) => sum + (r.estimated_revenue || 0), 0);
+  return data.reduce((sum,r)=>sum+(r.estimated_revenue||0),0);
 }
 
-// Labor time saved estimation
 export async function getLaborTimeSaved(startDate, endDate, hotelId) {
-  const missed = await getMissedSLACount(startDate, endDate, hotelId);
-  return missed * 2; // minutes
+  const missed = await getMissedSLACount(startDate,endDate,hotelId);
+  return missed*2;
 }
 
-// Service score estimate
 export async function getServiceScoreEstimate(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('created_at, acknowledged_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
+  const { data, error } = await supabase.from('requests').select('created_at,acknowledged_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
   if (error) throw new Error(error.message);
-  const scores = data.map(r => {
-    if (!r.acknowledged_at) return 50;
-    const secs = (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000;
-    if (secs <= 300) return 100;
-    if (secs <= 600) return 90;
-    if (secs <= 1200) return 80;
+  const scores = data.map(r=>{
+    if(!r.acknowledged_at) return 50;
+    const secs=(new Date(r.acknowledged_at)-new Date(r.created_at))/1000;
+    if(secs<=300) return 100;
+    if(secs<=600) return 90;
+    if(secs<=1200) return 80;
     return 60;
   });
-  return scores.length ? parseFloat((scores.reduce((a,b)=>a+b)/scores.length).toFixed(2)) : 0;
+  return scores.length?parseFloat((scores.reduce((a,b)=>a+b)/scores.length).toFixed(2)):0;
 }
 
-/** ──────────────────────────────────────────────────────────────
- * PHASE 4: ADDITIONAL INSIGHTS
- */
-
-// Service score trend per week
-export async function getServiceScoreTrend(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('created_at, acknowledged_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
-  if (error) throw new Error(error.message);
-
-  const byWeek = {};
-  data.forEach(r => {
-    const d = new Date(r.created_at);
-    const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(((d - new Date(year,0,1))/86400000 + new Date(year,0,1).getUTCDay()+1)/7);
-    const week = `${year}-W${String(weekNum).padStart(2,'0')}`;
-    const score = r.acknowledged_at ? (
-      (new Date(r.acknowledged_at)-new Date(r.created_at))/1000 <= 300 ? 100 :
-      (new Date(r.acknowledged_at)-new Date(r.created_at))/1000 <= 600 ? 90 :
-      (new Date(r.acknowledged_at)-new Date(r.created_at))/1000 <= 1200 ? 80 : 60
-    ) : 50;
-    (byWeek[week] ||= []).push(score);
+export async function getServiceScoreTrend(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('created_at,acknowledged_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+  if(error) throw new Error(error.message);
+  const byWeek={};
+  data.forEach(r=>{
+    const d=new Date(r.created_at);
+    const year=d.getUTCFullYear();
+    const weekNum=Math.ceil(((d-new Date(year,0,1))/86400000+new Date(year,0,1).getUTCDay()+1)/7);
+    const week=`${year}-W${String(weekNum).padStart(2,'0')}`;
+    const score=r.acknowledged_at?((new Date(r.acknowledged_at)-new Date(r.created_at))/1000<=300?100:((new Date(r.acknowledged_at)-new Date(r.created_at))/1000<=600?90:((new Date(r.acknowledged_at)-new Date(r.created_at))/1000<=1200?80:60))):50;
+    (byWeek[week]||=[]).push(score);
   });
-  return Object.entries(byWeek).sort().map(([period, arr]) => ({ period, avgServiceScore: parseFloat((arr.reduce((a,b)=>a+b)/arr.length).toFixed(2)) }));
+  return Object.entries(byWeek).sort().map(([period,arr])=>({ period, avgServiceScore:parseFloat((arr.reduce((a,b)=>a+b)/arr.length).toFixed(2)) }));
 }
 
-// Priority breakdown
-export async function getPriorityBreakdown(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('priority')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
-  if (error) throw new Error(error.message);
-  const counts = data.reduce((acc, { priority }) => {
-    const p = (priority||'normal').toLowerCase(); acc[p]=(acc[p]||0)+1; return acc;
-  }, {});
+export async function getPriorityBreakdown(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('priority').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+  if(error) throw new Error(error.message);
+  const counts=data.reduce((acc,{priority})=>{const p=(priority||'normal').toLowerCase();acc[p]=(acc[p]||0)+1;return acc;},{});
   return Object.entries(counts).map(([name,value])=>({ name,value }));
 }
 
-// Average completion time
-export async function getAvgCompletionTime(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('created_at, completed_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
-  if (error) throw new Error(error.message);
-  const diffs = data.filter(r=>r.completed_at).map(r=>(new Date(r.completed_at)-new Date(r.created_at))/60000);
+export async function getAvgCompletionTime(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('created_at,completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+  if(error) throw new Error(error.message);
+  const diffs=data.filter(r=>r.completed_at).map(r=>(new Date(r.completed_at)-new Date(r.created_at))/60000);
   return diffs.length?parseFloat((diffs.reduce((a,b)=>a+b)/diffs.length).toFixed(2)):0;
 }
 
-// Repeat guest trend
-export async function getRepeatGuestTrend(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('from_phone, created_at')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate);
-  if (error) throw new Error(error.message);
-  const weekTotals={}, weekRepeat={}, phoneCounts={};
+export async function getRepeatGuestTrend(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('from_phone,created_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+  if(error) throw new Error(error.message);
+  const totals={}, repeat={}, counts={};
   data.forEach(r=>{
-    const d = new Date(r.created_at); const year=d.getUTCFullYear(); const weekNum=Math.ceil(((d-new Date(year,0,1))/86400000+new Date(year,0,1).getUTCDay()+1)/7); const week=`${year}-W${String(weekNum).padStart(2,'0')}`;
-    weekTotals[week]=(weekTotals[week]||0)+1; phoneCounts[r.from_phone]=(phoneCounts[r.from_phone]||0)+1;
-    if(phoneCounts[r.from_phone]>1) weekRepeat[week]=(weekRepeat[week]||0)+1;
+    const d=new Date(r.created_at);
+    const year=d.getUTCFullYear();
+    const weekNum=Math.ceil(((d-new Date(year,0,1))/86400000+new Date(year,0,1).getUTCDay()+1)/7);
+    const week=`${year}-W${String(weekNum).padStart(2,'0')}`;
+    totals[week]=(totals[week]||0)+1;
+    counts[r.from_phone]=(counts[r.from_phone]||0)+1;
+    if(counts[r.from_phone]>1) repeat[week]=(repeat[week]||0)+1;
   });
-  return Object.entries(weekTotals).sort().map(([period,total])=>({ period, repeatPct: parseFloat(((weekRepeat[period]||0)/total*100).toFixed(2)) }));
+  return Object.entries(totals).sort().map(([period,total])=>({ period, repeatPct:parseFloat(((repeat[period]||0)/total*100).toFixed(2)) }));
 }
 
-// Enhanced labor time saved
-export async function getEnhancedLaborTimeSaved(startDate, endDate, hotelId) {
-  const [missed, avgComp, total] = await Promise.all([
-    getMissedSLACount(startDate,endDate,hotelId),
-    getAvgCompletionTime(startDate,endDate,hotelId),
-    getTotalRequests(startDate,endDate,hotelId)
-  ]);
+export async function getEnhancedLaborTimeSaved(startDate,endDate,hotelId) {
+  const [missed, avgComp, total] = await Promise.all([getMissedSLACount(startDate,endDate,hotelId), getAvgCompletionTime(startDate,endDate,hotelId), getTotalRequests(startDate,endDate,hotelId)]);
   return parseFloat((missed*5 + total*avgComp*0.1).toFixed(2));
 }
 
-// Requests per occupied room (requires occupancy table)
-export async function getRequestsPerOccupiedRoom(startDate, endDate, hotelId) {
-  const { data:occ, error:occErr } = await supabase.from('occupancy').select('date, occupied_rooms').eq('hotel_id',hotelId).gte('date',startDate).lte('date',endDate);
+export async function getRequestsPerOccupiedRoom(startDate,endDate,hotelId) {
+  const { data:occ, error:occErr } = await supabase.from('occupancy').select('date,occupied_rooms').eq('hotel_id',hotelId).gte('date',startDate).lte('date',endDate);
   if(occErr) throw new Error(occErr.message);
   const { data:reqs, error:reqErr } = await supabase.from('requests').select('created_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
   if(reqErr) throw new Error(reqErr.message);
-  const counts = {};
-  reqs.forEach(r=>{ const day=r.created_at.slice(0,10); counts[day]=(counts[day]||0)+1; });
-  return occ.map(o=>({ date:o.date, requestsPerRoom: o.occupied_rooms? parseFloat(((counts[o.date]||0)/o.occupied_rooms).toFixed(2)):0 }));
+  const countsPer={};
+  reqs.forEach(r=>{const d=r.created_at.slice(0,10);countsPer[d]=(countsPer[d]||0)+1;});
+  return occ.map(o=>({ date:o.date, requestsPerRoom:o.occupied_rooms?parseFloat(((countsPer[o.date]||0)/o.occupied_rooms).toFixed(2)):0 }));
 }
 
-// Top escalation reasons
-export async function getTopEscalationReasons(startDate, endDate, hotelId) {
+export async function getTopEscalationReasons(startDate,endDate,hotelId) {
   const { data, error } = await supabase.from('requests').select('escalation_reason').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate).not('escalation_reason','is',null);
   if(error) throw new Error(error.message);
-  const counts={}; data.forEach(r=>{counts[r.escalation_reason]=(counts[r.escalation_reason]||0)+1;});
-  return Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([reason,count])=>({ reason,count }));
+  const reasons={};data.forEach(r=>{reasons[r.escalation_reason]=(reasons[r.escalation_reason]||0)+1;});
+  return Object.entries(reasons).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([reason,count])=>({ reason,count }));
 }
 
-// Daily completion rate
-export async function getDailyCompletionRate(startDate, endDate, hotelId) {
-  const { data, error } = await supabase.from('requests').select('created_at, completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+export async function getDailyCompletionRate(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('created_at,completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
   if(error) throw new Error(error.message);
-  const byDate={}; data.forEach(({created_at,completed_at})=>{const day=created_at.slice(0,10); byDate[day]=byDate[day]||{total:0,completed:0}; byDate[day].total++; if(completed_at) byDate[day].completed++;});
-  return Object.entries(byDate).map(([date,{total,completed}])=>({ date, completionRate: parseFloat(((completed/total)*100).toFixed(2)) }));
+  const byDay={};data.forEach(({created_at,completed_at})=>{const day=created_at.slice(0,10);byDay[day]=byDay[day]||{total:0,completed:0};byDay[day].total++;if(completed_at)byDay[day].completed++;});
+  return Object.entries(byDay).map(([date,{total,completed}])=>({ date, completionRate:parseFloat(((completed/total)*100).toFixed(2)) }));
 }
 
-// Weekly completion rate
-export async function getWeeklyCompletionRate(startDate, endDate, hotelId) {
-  const { data, error } = await supabase.from('requests').select('created_at, completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+export async function getWeeklyCompletionRate(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('created_at,completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
   if(error) throw new Error(error.message);
-  const byWeek={}; data.forEach(({created_at,completed_at})=>{const d=new Date(created_at); const year=d.getUTCFullYear(); const weekNum=Math.ceil(((d-new Date(year,0,1))/86400000+new Date(year,0,1).getUTCDay()+1)/7); const week=`${year}-W${String(weekNum).padStart(2,'0')}`; byWeek[week]=byWeek[week]||{total:0,completed:0}; byWeek[week].total++; if(completed_at) byWeek[week].completed++;});
-  return Object.entries(byWeek).sort().map(([period,{total,completed}])=>({ period, completionRate: parseFloat(((completed/total)*100).toFixed(2)) }));
+  const byWeek={};data.forEach(({created_at,completed_at})=>{const d=new Date(created_at);const year=d.getUTCFullYear();const weekNum=Math.ceil(((d-new Date(year,0,1))/86400000+new Date(year,0,1).getUTCDay()+1)/7);const week=`${year}-W${String(weekNum).padStart(2,'0')}`;byWeek[week]=byWeek[week]||{total:0,completed:0};byWeek[week].total++;if(completed_at)byWeek[week].completed++;});
+  return Object.entries(byWeek).sort().map(([period,{total,completed}])=>({ period, completionRate:parseFloat(((completed/total)*100).toFixed(2)) }));
 }
 
-// Monthly completion rate
-export async function getMonthlyCompletionRate(startDate, endDate, hotelId) {
-  const { data, error } = await supabase.from('requests').select('created_at, completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
+export async function getMonthlyCompletionRate(startDate,endDate,hotelId) {
+  const { data, error } = await supabase.from('requests').select('created_at,completed_at').eq('hotel_id',hotelId).gte('created_at',startDate).lte('created_at',endDate);
   if(error) throw new Error(error.message);
-  const byMonth={}; data.forEach(({created_at,completed_at})=>{const month=created_at.slice(0,7); byMonth[month]=byMonth[month]||{total:0,completed:0}; byMonth[month].total++; if(completed_at) byMonth[month].completed++;});
-  return Object.entries(byMonth).sort().map(([period,{total,completed}])=>({ period, completionRate: parseFloat(((completed/total)*100).toFixed(2)) }));
+  const byMonth={};data.forEach(({created_at,completed_at})=>{const month=created_at.slice(0,7);byMonth[month]=byMonth[month]||{total:0,completed:0};byMonth[month].total++;if(completed_at)byMonth[month].completed++;});
+  return Object.entries(byMonth).sort().map(([period,{total,completed}])=>({ period, completionRate:parseFloat(((completed/total)*100).toFixed(2)) }));
+}
+
+/** ──────────────────────────────────────────────────────────────
+ * DEPARTMENT TOGGLING (using department_settings)
+ */
+
+export async function getEnabledDepartments(hotelId) {
+  const { data, error } = await supabase.from('department_settings').select('department').eq('hotel_id',hotelId).eq('enabled',true);
+  if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
+  return data.map(r => r.department);
+}
+
+export async function updateDepartmentToggle(hotelId, department, enabled) {
+  const { error } = await supabase.from('department_settings').upsert({ hotel_id, department, enabled },{ onConflict:['hotel_id','department'] });
+  if (error) throw new Error(`updateDepartmentToggle: ${error.message}`);
+}
+
+export async function getAllDepartmentSettings(hotelId) {
+  const { data, error } = await supabase.from('department_settings').select('department,enabled').eq('hotel_id',hotelId);
+  if (error) throw new Error(`getAllDepartmentSettings: ${error.message}`);
+  return data;
 }

@@ -1,14 +1,57 @@
-// src/routes/requests.js
-
 import express from 'express';
-import { supabase } from '../services/supabaseService.js';
-import {
-  acknowledgeRequestById,
-  completeRequestById
-} from '../services/requestActions.js';
+import { supabase, insertRequest } from '../services/supabaseService.js';
+import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { sendConfirmationSms } from '../services/telnyxService.js';
+import { classify } from '../services/classifier.js';
 
 const router = express.Router();
+
+// ✅ Submit a new guest request
+router.post('/', async (req, res, next) => {
+  try {
+    const { hotel_id, message, phone_number, room_number } = req.body;
+
+    if (!hotel_id || !message || !phone_number || !room_number) {
+      return res.status(400).json({ error: 'Missing required fields.' });
+    }
+
+    // Classify the message, passing hotelId so classifier fetches enabled departments
+    const { department, priority, room_number: extractedRoom } = await classify(message, hotel_id);
+
+    // Determine final room number (extracted if present)
+    const finalRoom = extractedRoom || room_number;
+
+    // Enrich with staff & VIP flags
+    const { data: guestData } = await supabase
+      .from('guests')
+      .select('is_vip')
+      .eq('phone_number', phone_number)
+      .maybeSingle();
+
+    const { data: staffData } = await supabase
+      .from('authorized_numbers')
+      .select('is_staff')
+      .eq('phone', phone_number)
+      .maybeSingle();
+
+    const request = await insertRequest({
+      hotel_id,
+      from_phone: phone_number,
+      message,
+      department,
+      priority,
+      room_number: finalRoom,
+      is_staff: staffData?.is_staff || false,
+      is_vip: guestData?.is_vip || false,
+      telnyx_id: null
+    });
+
+    res.status(201).json({ success: true, request });
+  } catch (err) {
+    console.error('❌ Failed to submit request:', err.message);
+    res.status(500).json({ error: err.message || 'Server error' });
+  }
+});
 
 // List all requests, enriched with VIP and staff flags
 router.get('/', async (req, res, next) => {
@@ -17,36 +60,20 @@ router.get('/', async (req, res, next) => {
       .from('requests')
       .select('*')
       .order('created_at', { ascending: false });
-    if (reqErr) {
-      console.error('❌ Error fetching requests:', reqErr.message);
-      throw reqErr;
-    }
+    if (reqErr) throw reqErr;
 
     const { data: guests, error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip');
-    if (guestErr) {
-      console.error('❌ Error fetching guests:', guestErr.message);
-      throw guestErr;
-    }
+    if (guestErr) throw guestErr;
 
     const { data: staff, error: staffErr } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff');
-    if (staffErr) {
-      console.error('❌ Error fetching staff:', staffErr.message);
-      throw staffErr;
-    }
+    if (staffErr) throw staffErr;
 
-    const guestMap = {};
-    guests.forEach(g => {
-      guestMap[g.phone_number] = { is_vip: g.is_vip };
-    });
-
-    const staffMap = {};
-    staff.forEach(s => {
-      if (s.is_staff) staffMap[s.phone] = true;
-    });
+    const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g]));
+    const staffMap = Object.fromEntries(staff.filter(s => s.is_staff).map(s => [s.phone, true]));
 
     const enriched = requests.map(r => ({
       ...r,
@@ -61,7 +88,7 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// Acknowledge a request (and send confirmation SMS)
+// Acknowledge a request
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
@@ -70,12 +97,11 @@ router.post('/:id/acknowledge', async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
-    console.log(`📣 [requests] Request ${id} acknowledged. Now sending confirmation SMS to ${updated.from_phone}…`);
     try {
       const smsResult = await sendConfirmationSms(updated.from_phone);
-      console.log('📨 [requests] Confirmation SMS sent:', smsResult);
+      console.log('📨 Confirmation SMS sent:', smsResult);
     } catch (smsErr) {
-      console.error('❌ [requests] Confirmation SMS failed:', smsErr);
+      console.error('❌ Confirmation SMS failed:', smsErr);
     }
 
     res.json({ success: true, updated });
@@ -98,7 +124,7 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-// GET all notes for a given request
+// Get notes for a request
 router.get('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id.trim(), 10);
@@ -114,30 +140,26 @@ router.get('/:id/notes', async (req, res, next) => {
   }
 });
 
-// Add new note to request (with debug logging and .select())
+// Add note to request
 router.post('/:id/notes', async (req, res, next) => {
-  console.log('📝 [notes] POST body:', req.body, 'params:', req.params);
   try {
     const id = parseInt(req.params.id.trim(), 10);
     const { content } = req.body;
-    if (!content) {
-      return res.status(400).json({ error: 'Note content is required.' });
-    }
+    if (!content) return res.status(400).json({ error: 'Note content is required.' });
+
     const { data, error } = await supabase
       .from('notes')
       .insert({ request_id: id, content, created_at: new Date().toISOString() })
       .select();
     if (error) throw error;
-    console.log('📝 [notes] Created note:', data);
     res.json({ success: true, note: data[0] });
   } catch (err) {
     next(err);
   }
 });
 
-// DELETE note from request (with debug logging)
+// Delete a note from a request
 router.delete('/:id/notes/:noteId', async (req, res, next) => {
-  console.log('🗑 [notes] DELETE params:', req.params);
   try {
     const id = parseInt(req.params.id, 10);
     const noteId = parseInt(req.params.noteId, 10);
@@ -147,7 +169,6 @@ router.delete('/:id/notes/:noteId', async (req, res, next) => {
       .eq('id', noteId)
       .eq('request_id', id);
     if (error) throw error;
-    console.log(`🗑 [notes] Deleted note ${noteId} from request ${id}`);
     res.json({ success: true });
   } catch (err) {
     next(err);
