@@ -63,7 +63,7 @@ router.post('/', async (req, res) => {
     let isAuthorized = false;
     let isStaff = false;
 
-    // 2) STAFF CHECK (only authorized_numbers)
+    // 2) STAFF CHECK
     try {
       const { data: authNum, error: authErr } = await supabase
         .from('authorized_numbers')
@@ -78,7 +78,7 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ Staff lookup failed:', err.message);
     }
 
-    // 3) GUEST AUTH if not staff
+    // 3) GUEST AUTH
     if (!isAuthorized) {
       const { data: existing } = await supabase
         .from('authorized_numbers')
@@ -96,7 +96,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 4) BLOCK if unauthorized
+    // 4) BLOCK unauthorized
     if (!isAuthorized) {
       console.log('🚫 Blocked SMS from unauthorized phone:', from_phone);
       await sendRejectionSms(
@@ -106,7 +106,7 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: unauthorized phone');
     }
 
-    // 5) IDENTIFY HOTEL
+    // 5) HOTEL LOOKUP
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
@@ -117,23 +117,15 @@ router.post('/', async (req, res) => {
     }
     const hotel_id = hotel.id;
 
-    // 6) CLASSIFY MESSAGE with hotel-specific departments
-    let department = 'General';
-    let priority = 'Normal';
+    // 6) CLASSIFY MESSAGE
+    let department = 'Front Desk';
+    let priority = 'normal';
     let room_number = null;
 
     try {
-      const { data: deptRows, error: deptErr } = await supabase
-        .from('departments')
-        .select('name')
-        .eq('hotel_id', hotel_id)
-        .eq('enabled', true);
-
-      if (deptErr) throw new Error(deptErr.message);
-
-      const enabledDepartments = deptRows.map(d => d.name);
-      const result = await classify(message, enabledDepartments);
-
+      console.log('📩 Incoming SMS for classification:', message);
+      const result = await classify(message, hotel_id);
+      console.log('🧠 Classified via SMS route:', result);
       department = result.department;
       priority = result.priority;
       room_number = result.room_number;
@@ -141,7 +133,7 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ Classification failed:', err.message || err);
     }
 
-    // 7) GUEST TRACKING & VIP (ONLY if NOT staff)
+    // 7) GUEST TRACKING & VIP
     let isVip = false;
     if (!isStaff) {
       try {
@@ -160,7 +152,7 @@ router.post('/', async (req, res) => {
               total_requests: newTotal,
               last_seen: now,
               is_vip: isVip,
-              is_staff: false, // force override
+              is_staff: false,
             })
             .eq('phone_number', from_phone);
         } else {
@@ -179,7 +171,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 8) INSERT REQUEST (with staff & VIP flags)
+    // 8) INSERT REQUEST
     const inserted = await insertRequest({
       hotel_id,
       from_phone,
@@ -192,6 +184,7 @@ router.post('/', async (req, res) => {
       telnyx_id: telnyxId,
     });
     console.log('🆕 Request inserted:', inserted);
+
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
   }
