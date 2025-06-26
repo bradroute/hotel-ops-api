@@ -1,23 +1,21 @@
-// src/services/classifier.js
 import OpenAI from 'openai';
 import { openAIApiKey } from '../config/index.js';
 import { getEnabledDepartments as fetchEnabled } from './supabaseService.js';
 
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
-// Keyword → department mapping
 const keywordMap = [
-  { keywords: ['wifi', 'wi-fi', 'internet', 'network'], department: 'IT' },
-  { keywords: ['massage', 'spa', 'treatment'], department: 'Spa' },
-  { keywords: ['bags', 'luggage', 'suitcase'], department: 'Bellhop' },
-  { keywords: ['towel', 'sheets', 'cleaning'], department: 'Housekeeping' },
-  { keywords: ['broken', 'leak', 'repair', 'fix'], department: 'Maintenance' },
-  { keywords: ['car', 'valet', 'parking'], department: 'Valet' },
-  { keywords: ['recommend', 'recommendation', 'suggest', 'nearby'], department: 'Concierge' },
-  { keywords: ['reservation', 'book', 'cancel'], department: 'Reservations' },
-  { keywords: ['laundry', 'dry clean', 'pressing'], department: 'Laundry' },
-  { keywords: ['security', 'lost', 'safety'], department: 'Security' },
-  { keywords: ['restaurant', 'menu', 'drink'], department: 'Food & Beverage' }
+  { keywords: ['wifi','wi-fi','internet','network'], department: 'IT' },
+  { keywords: ['massage','spa','treatment'], department: 'Spa' },
+  { keywords: ['bags','luggage','suitcase'], department: 'Bellhop' },
+  { keywords: ['towel','sheets','cleaning'], department: 'Housekeeping' },
+  { keywords: ['broken','leak','repair','fix'], department: 'Maintenance' },
+  { keywords: ['car','valet','parking'], department: 'Valet' },
+  { keywords: ['recommend','recommendation','suggest','nearby'], department: 'Concierge' },
+  { keywords: ['reservation','book','cancel'], department: 'Reservations' },
+  { keywords: ['laundry','dry clean','pressing'], department: 'Laundry' },
+  { keywords: ['security','lost','safety','disturbance'], department: 'Security' },
+  { keywords: ['restaurant','menu','drink'], department: 'Food & Beverage' }
 ];
 
 function overrideDepartment(text, enabledDepartments) {
@@ -35,10 +33,9 @@ export async function classify(text, hotelId) {
   console.log('🏨 Hotel ID:', hotelId);
 
   const enabled = await fetchEnabled(hotelId);
-  console.log('📦 Raw fetchEnabled response:', enabled);
 
-  if (!enabled || enabled.length === 0) {
-    console.error(`❌ No enabled departments found for hotel ${hotelId}`);
+  if (!enabled.length) {
+    console.log(`❌ No enabled departments found for hotel ${hotelId}`);
     return {
       department: 'Front Desk',
       priority: 'normal',
@@ -46,11 +43,8 @@ export async function classify(text, hotelId) {
     };
   }
 
-  const departments = enabled;
-  console.log('✅ Enabled departments:', departments);
-
-  const list = departments.join(', ');
-  console.log('🧾 Department list used in prompt:', list);
+  console.log('✅ Enabled departments:', enabled);
+  const list = enabled.join(', ');
 
   const prompt = `You are a hotel task classifier. Choose the single most appropriate department from: ${list}.
 
@@ -90,19 +84,17 @@ Message: "${text}"`;
   try {
     parsed = JSON.parse(json);
   } catch (e) {
-    console.error('❌ JSON parse error:', e);
+    console.error('❌ JSON parsing error:', e);
     parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 
-  // Apply keyword override if allowed
-  const forced = overrideDepartment(text, departments);
+  const forced = overrideDepartment(text, enabled);
   if (forced) {
     console.log(`🔁 Keyword override: ${forced}`);
     parsed.department = forced;
   }
 
-  // Ensure department is in the enabled list
-  if (!departments.includes(parsed.department)) {
+  if (!enabled.includes(parsed.department)) {
     console.log(`🚫 Disabled department "${parsed.department}", defaulting to Front Desk`);
     parsed.department = 'Front Desk';
   }
