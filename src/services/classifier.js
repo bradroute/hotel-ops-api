@@ -5,7 +5,7 @@ import { getEnabledDepartments as fetchEnabled } from './supabaseService.js';
 
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
-// Always enforce specific keywords to precise departments
+// Keywords mapped to department suggestions
 const keywordMap = [
   { keywords: ['wifi','wi-fi','internet','network'], department: 'IT' },
   { keywords: ['massage','spa','treatment'], department: 'Spa' },
@@ -20,16 +20,17 @@ const keywordMap = [
   { keywords: ['restaurant','menu','drink'], department: 'Food & Beverage' }
 ];
 
-function overrideDepartment(text) {
+function overrideDepartment(text, enabledDepartments) {
   const lower = text.toLowerCase();
   for (const { keywords, department } of keywordMap) {
-    if (keywords.some(k => lower.includes(k))) return department;
+    if (keywords.some(k => lower.includes(k)) && enabledDepartments.includes(department)) {
+      return department;
+    }
   }
   return null;
 }
 
 export async function classify(text, hotelId) {
-  // Get currently enabled departments
   const enabled = await fetchEnabled(hotelId);
   const departments = enabled.length ? enabled : [
     'Front Desk','Housekeeping','Maintenance','Room Service','Valet',
@@ -70,7 +71,7 @@ Message: "${text}"`;
   const raw = res.choices[0].message.content;
   console.log('🔍 RAW CLASSIFIER OUTPUT:\n', raw);
 
-  // Extract JSON between outer braces
+  // Extract JSON from output
   const match = raw.match(/\{[\s\S]*\}/);
   const json = match ? match[0] : raw;
   let parsed;
@@ -81,16 +82,12 @@ Message: "${text}"`;
     parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 
-  // Override by keyword (only if department is enabled)
-  const forced = overrideDepartment(text);
-  if (forced && departments.includes(forced)) {
-    parsed.department = forced;
-  }
+  // Force override only if keyword match is allowed
+  const forced = overrideDepartment(text, departments);
+  if (forced) parsed.department = forced;
 
-  // Ensure department is enabled
-  if (!departments.includes(parsed.department)) {
-    parsed.department = 'Front Desk';
-  }
+  // Final check: if still not allowed, fallback to Front Desk
+  if (!departments.includes(parsed.department)) parsed.department = 'Front Desk';
 
   return {
     department: parsed.department,
