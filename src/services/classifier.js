@@ -5,6 +5,7 @@ import { getEnabledDepartments as fetchEnabled } from './supabaseService.js';
 
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
+// Keyword → department mapping
 const keywordMap = [
   { keywords: ['wifi', 'wi-fi', 'internet', 'network'], department: 'IT' },
   { keywords: ['massage', 'spa', 'treatment'], department: 'Spa' },
@@ -36,16 +37,17 @@ export async function classify(text, hotelId) {
   const enabled = await fetchEnabled(hotelId);
   console.log('📦 Raw fetchEnabled response:', enabled);
 
-  const departments = enabled.length ? enabled : [
-    'Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet',
-    'Concierge', 'Spa', 'Bellhop', 'Security', 'Events',
-    'Laundry', 'IT', 'Engineering', 'Food & Beverage', 'Reservations'
-  ];
-  console.log('✅ Enabled departments:', departments);
-
-  if (departments.includes('Security')) {
-    console.log('⚠️ Security is in the allowed department list.');
+  if (!enabled || enabled.length === 0) {
+    console.error(`❌ No enabled departments found for hotel ${hotelId}`);
+    return {
+      department: 'Front Desk',
+      priority: 'normal',
+      room_number: null
+    };
   }
+
+  const departments = enabled;
+  console.log('✅ Enabled departments:', departments);
 
   const list = departments.join(', ');
   console.log('🧾 Department list used in prompt:', list);
@@ -88,20 +90,20 @@ Message: "${text}"`;
   try {
     parsed = JSON.parse(json);
   } catch (e) {
-    console.error('❌ JSON parsing error:', e);
+    console.error('❌ JSON parse error:', e);
     parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 
-  // Keyword override
+  // Apply keyword override if allowed
   const forced = overrideDepartment(text, departments);
   if (forced) {
-    console.log(`🔁 Overriding department via keyword: ${forced}`);
+    console.log(`🔁 Keyword override: ${forced}`);
     parsed.department = forced;
   }
 
-  // Final enforcement: only return enabled departments
+  // Ensure department is in the enabled list
   if (!departments.includes(parsed.department)) {
-    console.log(`🚫 Department "${parsed.department}" is disabled. Defaulting to Front Desk.`);
+    console.log(`🚫 Disabled department "${parsed.department}", defaulting to Front Desk`);
     parsed.department = 'Front Desk';
   }
 
