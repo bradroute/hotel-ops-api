@@ -46,7 +46,7 @@ router.post('/', async (req, res) => {
 
     res.status(201).json({ success: true, request });
   } catch (err) {
-    console.error('❌ Failed to submit request:', err.message);
+    console.error('❌ Failed to submit request:', err);
     res.status(500).json({ error: err.message || 'Server error' });
   }
 });
@@ -55,6 +55,7 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { hotel_id } = req.query;
+    console.log('🌐 GET /requests — hotel_id:', hotel_id);
 
     if (!hotel_id) {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
@@ -68,24 +69,22 @@ router.get('/', async (req, res) => {
 
     if (reqErr) throw reqErr;
 
-    const { data: guests, error: guestErr } = await supabase
+    const { data: guests = [], error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
       .eq('hotel_id', hotel_id);
-
     if (guestErr) throw guestErr;
 
-    const { data: staff, error: staffErr } = await supabase
+    const { data: staff = [], error: staffErr } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff')
       .eq('hotel_id', hotel_id);
-
     if (staffErr) throw staffErr;
 
-    const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g]));
-    const staffMap = Object.fromEntries(staff.filter(s => s.is_staff).map(s => [s.phone, true]));
+    const guestMap = Object.fromEntries((guests || []).map(g => [g.phone_number, g]));
+    const staffMap = Object.fromEntries((staff || []).filter(s => s.is_staff).map(s => [s.phone, true]));
 
-    const enriched = requests.map(r => ({
+    const enriched = (requests || []).map(r => ({
       ...r,
       is_vip: !!guestMap[r.from_phone]?.is_vip,
       is_staff: !!staffMap[r.from_phone]
@@ -93,7 +92,7 @@ router.get('/', async (req, res) => {
 
     res.json(enriched);
   } catch (err) {
-    console.error('❌ Enrichment failure:', err.message);
+    console.error('🔥 GET /requests failed:', err);
     res.status(500).json({ error: err.message || 'Unknown server error' });
   }
 });
