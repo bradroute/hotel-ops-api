@@ -463,12 +463,18 @@ export async function getEnabledDepartments(hotelId) {
 
   console.log('📦 Raw fetchEnabled response:', data);
 
-  // Safely filter regardless of actual type
   const enabled = data
-    .filter(row => row.enabled === true || row.enabled === 'true' || row.enabled === 'TRUE')
+    .filter(row =>
+      row.enabled === true ||
+      row.enabled === 'true' ||
+      row.enabled === 'TRUE' ||
+      row.enabled === 1 ||        // integer true
+      row.enabled === '1'         // string true
+    )
     .map(row => row.department);
 
   console.log('✅ Enabled departments:', enabled);
+
   return enabled;
 }
 
