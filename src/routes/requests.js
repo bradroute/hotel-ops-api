@@ -1,3 +1,4 @@
+// src/routes/requests.js
 import express from 'express';
 import { supabase, insertRequest } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
@@ -61,33 +62,38 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
     }
 
+    // Fetch raw requests
     const { data: requests, error: reqErr } = await supabase
       .from('requests')
       .select('*')
       .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
-
     if (reqErr) throw reqErr;
 
+    // Fetch guest VIP flags
     const { data: guests = [], error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
       .eq('hotel_id', hotel_id);
     if (guestErr) throw guestErr;
 
+    // Fetch staff numbers as fallback
     const { data: staff = [], error: staffErr } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff')
       .eq('hotel_id', hotel_id);
     if (staffErr) throw staffErr;
 
-    const guestMap = Object.fromEntries((guests || []).map(g => [g.phone_number, g]));
-    const staffMap = Object.fromEntries((staff || []).filter(s => s.is_staff).map(s => [s.phone, true]));
+    const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g]));
+    const staffMap = Object.fromEntries(
+      staff.filter(s => s.is_staff).map(s => [s.phone, true])
+    );
 
-    const enriched = (requests || []).map(r => ({
+    // Enrich each request: preserve its own is_staff or fallback to authorized_numbers
+    const enriched = requests.map(r => ({
       ...r,
       is_vip: !!guestMap[r.from_phone]?.is_vip,
-      is_staff: !!staffMap[r.from_phone]
+      is_staff: r.is_staff || !!staffMap[r.from_phone]
     }));
 
     res.json(enriched);
@@ -133,7 +139,7 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-// ── Get Notes for a Request ───────────────────────────────────────────
+// ── Get, Add, Delete Notes (unchanged) ────────────────────────────────
 router.get('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id.trim(), 10);
@@ -149,7 +155,6 @@ router.get('/:id/notes', async (req, res, next) => {
   }
 });
 
-// ── Add a Note to a Request ───────────────────────────────────────────
 router.post('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id.trim(), 10);
@@ -167,7 +172,6 @@ router.post('/:id/notes', async (req, res, next) => {
   }
 });
 
-// ── Delete a Note from a Request ──────────────────────────────────────
 router.delete('/:id/notes/:noteId', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
