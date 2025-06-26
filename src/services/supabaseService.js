@@ -461,8 +461,14 @@ export async function getEnabledDepartments(hotelId) {
 
   if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
 
+  console.log('📦 Raw fetchEnabled response:', data); // Add this line
+
   // Force filtering where enabled is truly boolean true
-  return data.filter(row => row.enabled === true).map(row => row.department);
+  const enabled = data.filter(row => row.enabled === true).map(row => row.department);
+
+  console.log('✅ Enabled departments:', enabled); // Add this line
+
+  return enabled;
 }
 
 export async function updateDepartmentToggle(hotelId, department, enabled) {
