@@ -28,41 +28,64 @@ export async function insertRequest({
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
+  // Ensure guest exists or update last_seen
+  const { data: existingGuest } = await supabase
+    .from('guests')
+    .select('id')
+    .eq('phone_number', from_phone)
+    .eq('hotel_id', hotel_id)
+    .maybeSingle();
+
+  if (!existingGuest) {
+    await supabase.from('guests').insert({
+      phone_number: from_phone,
+      is_vip: is_vip || false,
+      hotel_id,
+      last_seen: new Date().toISOString()
+    });
+  } else {
+    await supabase.from('guests')
+      .update({ last_seen: new Date().toISOString() })
+      .eq('id', existingGuest.id);
+  }
+
+  // Ensure staff is inserted (if is_staff is true)
+  if (is_staff) {
+    const { data: existingStaff } = await supabase
+      .from('authorized_numbers')
+      .select('id')
+      .eq('phone', from_phone)
+      .eq('hotel_id', hotel_id)
+      .maybeSingle();
+
+    if (!existingStaff) {
+      await supabase.from('authorized_numbers').insert({
+        phone: from_phone,
+        is_staff: true,
+        hotel_id
+      });
+    }
+  }
+
   const { data: requestRows, error: reqErr } = await supabase
     .from('requests')
-    .insert([{ hotel_id, from_phone, message, department, priority, room_number, telnyx_id, estimated_revenue, is_staff, is_vip }])
+    .insert([{
+      hotel_id,
+      from_phone,
+      message,
+      department,
+      priority,
+      room_number,
+      telnyx_id,
+      estimated_revenue,
+      is_staff,
+      is_vip
+    }])
     .select();
+
   if (reqErr) throw new Error(reqErr.message);
   return requestRows[0];
 }
-
-export async function fetchAllRequests() {
-  const { data: requests, error: reqErr } = await supabase
-    .from('requests')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (reqErr) throw new Error(reqErr.message);
-
-  const { data: guests, error: guestErr } = await supabase
-    .from('guests')
-    .select('phone_number, is_vip');
-  if (guestErr) throw new Error(guestErr.message);
-
-  const { data: staff, error: staffErr } = await supabase
-    .from('authorized_numbers')
-    .select('phone, is_staff');
-  if (staffErr) throw new Error(staffErr.message);
-
-  const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g.is_vip]));
-  const staffSet = new Set(staff.filter(s => s.is_staff).map(s => s.phone));
-
-  return requests.map(r => ({
-    ...r,
-    is_vip: !!guestMap[r.from_phone],
-    is_staff: staffSet.has(r.from_phone)
-  }));
-}
-
 /** ──────────────────────────────────────────────────────────────
  * ANALYTICS CORE FUNCTIONS (PHASE 1 + 2)
  */
