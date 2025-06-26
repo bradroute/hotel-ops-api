@@ -37,6 +37,9 @@ export async function classify(text, hotelId) {
     'Concierge','Spa','Bellhop','Security','Events',
     'Laundry','IT','Engineering','Food & Beverage','Reservations'
   ];
+  
+  console.log('✅ Enabled departments for hotel:', departments);
+
   const list = departments.join(', ');
 
   const prompt = `You are a hotel task classifier. Choose the single most appropriate department from: ${list}.
