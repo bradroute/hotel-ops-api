@@ -7,6 +7,11 @@ import { classify } from '../services/classifier.js';
 
 const router = express.Router();
 
+// Utility to normalize phone numbers for consistent matching
+function normalizePhone(phone) {
+  return phone.replace(/\D/g, '');
+}
+
 // ── Create a New Guest Request ────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
@@ -84,17 +89,24 @@ router.get('/', async (req, res) => {
       .eq('hotel_id', hotel_id);
     if (staffErr) throw staffErr;
 
-    const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g]));
+    // Create maps for quick lookup
+    const guestMap = Object.fromEntries(
+      guests.map(g => [normalizePhone(g.phone_number), g])
+    );
     const staffMap = Object.fromEntries(
-      staff.filter(s => s.is_staff).map(s => [s.phone, true])
+      staff.filter(s => s.is_staff).map(s => [normalizePhone(s.phone), true])
     );
 
-    // Enrich each request: preserve its own is_staff or fallback to authorized_numbers
-    const enriched = requests.map(r => ({
-      ...r,
-      is_vip: !!guestMap[r.from_phone]?.is_vip,
-      is_staff: r.is_staff || !!staffMap[r.from_phone]
-    }));
+    // Enrich each request: preserve its own flags or fallback to lookups
+    const enriched = requests.map(r => {
+      const normPhone = normalizePhone(r.from_phone);
+      return {
+        ...r,
+        // Use the stored flag in the request first, then fallback to lookup
+        is_vip: r.is_vip || !!guestMap[normPhone]?.is_vip,
+        is_staff: r.is_staff || !!staffMap[normPhone]
+      };
+    });
 
     res.json(enriched);
   } catch (err) {
