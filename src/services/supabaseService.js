@@ -455,3 +455,43 @@ export async function getAllDepartmentSettings(hotelId) {
   if (error) throw new Error(`getAllDepartmentSettings: ${error.message}`);
   return data;
 }
+export async function getHotelProfile(hotelId) {
+  const { data, error } = await supabase
+    .from("hotels")
+    .select("*")
+    .eq("id", hotelId)
+    .single();
+  return { data, error };
+}
+
+export async function updateHotelProfile(hotelId, updates) {
+  const { error } = await supabase
+    .from("hotels")
+    .update(updates)
+    .eq("id", hotelId);
+  return error;
+}
+// Fetch SLA settings for this hotel
+export async function getSlaSettings(hotelId) {
+  const { data, error } = await supabase
+    .from('sla_settings')
+    .select('department, ack_time_minutes, res_time_minutes, is_active')
+    .eq('hotel_id', hotelId);
+  return { data, error };
+}
+
+// Upsert SLA settings
+export async function upsertSlaSettings(hotelId, slaMap) {
+  // slaMap: { [dept]: { ack_time, res_time, is_active } }
+  const payload = Object.entries(slaMap).map(([department, { ack_time, res_time, is_active }]) => ({
+    hotel_id: hotelId,
+    department,
+    ack_time_minutes: ack_time,
+    res_time_minutes: res_time,
+    is_active,
+  }));
+  const { data, error } = await supabase
+    .from('sla_settings')
+    .upsert(payload, { onConflict: ['hotel_id', 'department'] });
+  return { data, error };
+}
