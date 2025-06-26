@@ -82,12 +82,18 @@ Message: "${text}"`;
     parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 
-  // Force override only if keyword match is allowed
+  // Override with keyword match only if allowed
   const forced = overrideDepartment(text, departments);
-  if (forced) parsed.department = forced;
+  if (forced) {
+    console.log(`🔁 Keyword override: ${forced}`);
+    parsed.department = forced;
+  }
 
-  // Final check: if still not allowed, fallback to Front Desk
-  if (!departments.includes(parsed.department)) parsed.department = 'Front Desk';
+  // Final check to enforce only allowed departments
+  if (!departments.includes(parsed.department)) {
+    console.log(`🚫 Disabled department "${parsed.department}", defaulting to Front Desk`);
+    parsed.department = 'Front Desk';
+  }
 
   return {
     department: parsed.department,
