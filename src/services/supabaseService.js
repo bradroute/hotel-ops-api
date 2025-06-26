@@ -461,13 +461,14 @@ export async function getEnabledDepartments(hotelId) {
 
   if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
 
-  console.log('📦 Raw fetchEnabled response:', data); // Add this line
+  console.log('📦 Raw fetchEnabled response:', data);
 
-  // Force filtering where enabled is truly boolean true
-  const enabled = data.filter(row => row.enabled === true).map(row => row.department);
+  // Safely filter regardless of actual type
+  const enabled = data
+    .filter(row => row.enabled === true || row.enabled === 'true' || row.enabled === 'TRUE')
+    .map(row => row.department);
 
-  console.log('✅ Enabled departments:', enabled); // Add this line
-
+  console.log('✅ Enabled departments:', enabled);
   return enabled;
 }
 
