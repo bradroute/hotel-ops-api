@@ -1,3 +1,4 @@
+// src/services/classifier.js
 import OpenAI from 'openai';
 import { openAIApiKey } from '../config/index.js';
 import { getEnabledDepartments as fetchEnabled } from './supabaseService.js';
@@ -73,17 +74,23 @@ Message: "${text}"`;
   const match = raw.match(/\{[\s\S]*\}/);
   const json = match ? match[0] : raw;
   let parsed;
-  try { parsed = JSON.parse(json); } catch (e) {
+  try {
+    parsed = JSON.parse(json);
+  } catch (e) {
     console.error('Parsing error:', e);
     parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 
-  // Override by keyword
+  // Override by keyword (only if department is enabled)
   const forced = overrideDepartment(text);
-  if (forced) parsed.department = forced;
+  if (forced && departments.includes(forced)) {
+    parsed.department = forced;
+  }
 
   // Ensure department is enabled
-  if (!departments.includes(parsed.department)) parsed.department = 'Front Desk';
+  if (!departments.includes(parsed.department)) {
+    parsed.department = 'Front Desk';
+  }
 
   return {
     department: parsed.department,
