@@ -6,8 +6,8 @@ import { classify } from '../services/classifier.js';
 
 const router = express.Router();
 
-// ✅ Submit a new guest request
-router.post('/', async (req, res, next) => {
+// ── Create a New Guest Request ────────────────────────────────────────
+router.post('/', async (req, res) => {
   try {
     const { hotel_id, message, phone_number, room_number } = req.body;
 
@@ -15,23 +15,21 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Missing required fields.' });
     }
 
-    // Classify the message, passing hotelId so classifier fetches enabled departments
     const { department, priority, room_number: extractedRoom } = await classify(message, hotel_id);
-
-    // Determine final room number (extracted if present)
     const finalRoom = extractedRoom || room_number;
 
-    // Enrich with staff & VIP flags
     const { data: guestData } = await supabase
       .from('guests')
       .select('is_vip')
       .eq('phone_number', phone_number)
+      .eq('hotel_id', hotel_id)
       .maybeSingle();
 
     const { data: staffData } = await supabase
       .from('authorized_numbers')
       .select('is_staff')
       .eq('phone', phone_number)
+      .eq('hotel_id', hotel_id)
       .maybeSingle();
 
     const request = await insertRequest({
@@ -53,23 +51,35 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// List all requests, enriched with VIP and staff flags
-router.get('/', async (req, res, next) => {
+// ── Get All Requests (Scoped to hotel_id) ─────────────────────────────
+router.get('/', async (req, res) => {
   try {
+    const { hotel_id } = req.query;
+
+    if (!hotel_id) {
+      return res.status(400).json({ error: 'Missing hotel_id in query.' });
+    }
+
     const { data: requests, error: reqErr } = await supabase
       .from('requests')
       .select('*')
+      .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
+
     if (reqErr) throw reqErr;
 
     const { data: guests, error: guestErr } = await supabase
       .from('guests')
-      .select('phone_number, is_vip');
+      .select('phone_number, is_vip')
+      .eq('hotel_id', hotel_id);
+
     if (guestErr) throw guestErr;
 
     const { data: staff, error: staffErr } = await supabase
       .from('authorized_numbers')
-      .select('phone, is_staff');
+      .select('phone, is_staff')
+      .eq('hotel_id', hotel_id);
+
     if (staffErr) throw staffErr;
 
     const guestMap = Object.fromEntries(guests.map(g => [g.phone_number, g]));
@@ -88,7 +98,7 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// Acknowledge a request
+// ── Acknowledge a Request ─────────────────────────────────────────────
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
@@ -110,7 +120,7 @@ router.post('/:id/acknowledge', async (req, res, next) => {
   }
 });
 
-// Complete a request
+// ── Complete a Request ────────────────────────────────────────────────
 router.post('/:id/complete', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
@@ -124,7 +134,7 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-// Get notes for a request
+// ── Get Notes for a Request ───────────────────────────────────────────
 router.get('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id.trim(), 10);
@@ -140,7 +150,7 @@ router.get('/:id/notes', async (req, res, next) => {
   }
 });
 
-// Add note to request
+// ── Add a Note to a Request ───────────────────────────────────────────
 router.post('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id.trim(), 10);
@@ -158,7 +168,7 @@ router.post('/:id/notes', async (req, res, next) => {
   }
 });
 
-// Delete a note from a request
+// ── Delete a Note from a Request ──────────────────────────────────────
 router.delete('/:id/notes/:noteId', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
