@@ -456,11 +456,13 @@ export async function getMonthlyCompletionRate(startDate,endDate,hotelId) {
 export async function getEnabledDepartments(hotelId) {
   const { data, error } = await supabase
     .from('department_settings')
-    .select('department')
-    .eq('hotel_id', hotelId)
-    .eq('enabled', true);
+    .select('department, enabled')
+    .eq('hotel_id', hotelId);
+
   if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
-  return data.map(r => r.department);
+
+  // Force filtering where enabled is truly boolean true
+  return data.filter(row => row.enabled === true).map(row => row.department);
 }
 
 export async function updateDepartmentToggle(hotelId, department, enabled) {
