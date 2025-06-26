@@ -52,9 +52,18 @@ router.post('/', async (req, res) => {
     if (!from_phone || !to || !message) {
       return res.status(200).send('Ignored: missing fields');
     }
-    if (from_phone === process.env.TELNYX_NUMBER) {
-      return res.status(200).send('Ignored: outgoing SMS');
+
+    // Dynamically ignore SMS if from one of our own Telnyx hotel numbers
+    const { data: possibleHotel } = await supabase
+      .from('hotels')
+      .select('id')
+      .eq('phone_number', from_phone)
+      .maybeSingle();
+
+    if (possibleHotel) {
+      return res.status(200).send('Ignored: outgoing SMS from hotel');
     }
+
     if (await findByTelnyxId(telnyxId)) {
       return res.status(200).send('Ignored: duplicate SMS');
     }
@@ -62,7 +71,7 @@ router.post('/', async (req, res) => {
     const now = new Date().toISOString();
     let isAuthorized = false;
     let isStaff = false;
-
+    
     // 2) STAFF CHECK
     try {
       const { data: authNum, error: authErr } = await supabase
