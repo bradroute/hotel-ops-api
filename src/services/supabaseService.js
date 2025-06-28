@@ -1,17 +1,23 @@
 // src/services/supabaseService.js
+import dotenv from 'dotenv';
+dotenv.config();
+
 import ws from 'isomorphic-ws';
 if (typeof globalThis.WebSocket === 'undefined') {
   globalThis.WebSocket = ws;
 }
 
 import { createClient } from '@supabase/supabase-js';
-import { supabaseUrl, supabaseKey } from '../config/index.js';
+import { supabaseUrl, supabaseKey, supabaseServiceRoleKey } from '../config/index.js';
 import { estimateOrderRevenue } from './menuCatalog.js';
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: { enabled: false }
 });
 
+export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
+  realtime: { enabled: false }
+});
 /** ──────────────────────────────────────────────────────────────
  * REQUESTS CRUD
  */
@@ -67,23 +73,33 @@ export async function insertRequest({
     }
   }
 
+  // Build the payload for the new request
+  const payload = {
+    hotel_id,
+    from_phone,
+    message,
+    department,
+    priority,
+    room_number,
+    telnyx_id,
+    estimated_revenue,
+    is_staff,
+    is_vip
+  };
+  console.log('🔽 insertRequest payload:', payload);
+
+  // Insert into requests table
   const { data: requestRows, error: reqErr } = await supabase
     .from('requests')
-    .insert([{
-      hotel_id,
-      from_phone,
-      message,
-      department,
-      priority,
-      room_number,
-      telnyx_id,
-      estimated_revenue,
-      is_staff,
-      is_vip
-    }])
+    .insert([payload])
     .select();
 
-  if (reqErr) throw new Error(reqErr.message);
+  if (reqErr) {
+    console.error('❌ Supabase “requests” INSERT error:', reqErr);
+    throw new Error(reqErr.message);
+  }
+  console.log('✅ Supabase “requests” INSERT succeeded:', requestRows);
+
   return requestRows[0];
 }
 /** ──────────────────────────────────────────────────────────────

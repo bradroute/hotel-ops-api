@@ -14,6 +14,7 @@ function normalizePhone(phone) {
 
 // ── Create a New Guest Request ────────────────────────────────────────
 router.post('/', async (req, res) => {
+  console.log('🛰️  POST /requests payload:', req.body);
   try {
     const { hotel_id, message, phone_number, room_number } = req.body;
 
@@ -74,6 +75,8 @@ router.get('/', async (req, res) => {
       .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
     if (reqErr) throw reqErr;
+
+    console.log('🔽 fetched requests for', hotel_id, ':', requests);
 
     // Fetch guest VIP flags
     const { data: guests = [], error: guestErr } = await supabase

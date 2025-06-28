@@ -1,6 +1,6 @@
 // src/routes/sms.js
 import express from 'express';
-import { supabase, insertRequest } from '../services/supabaseService.js';
+import { supabase, supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 import { sendRejectionSms, sendConfirmationSms } from '../services/telnyxService.js';
 import { classify } from '../services/classifier.js';
 import { findByTelnyxId } from '../services/requestLookup.js';
@@ -11,36 +11,69 @@ import {
 
 const router = express.Router();
 
+// Log middleware for all incoming SMS webhooks
+router.use((req, res, next) => {
+  console.log('🔍 /sms payload:', JSON.stringify(req.body).slice(0,500));
+  next();
+});
+
 async function tryAutoPair(from_phone) {
+  console.log('🔄 tryAutoPair called for', from_phone);
   const now = new Date().toISOString();
-  const { data: slots } = await supabase.from('room_device_slots').select('*');
+  const { data: slots, error: slotsErr } = await supabase
+    .from('room_device_slots')
+    .select('*');
+  if (slotsErr) console.error('❌ error fetching slots:', slotsErr);
+  console.log('📦 current slots:', slots);
 
   for (const slot of slots) {
-    const { data: activeGuests } = await supabase
+    console.log('  ➡️  checking slot for room', slot.room_number, slot);
+    const { data: activeGuests, error: guestErr } = await supabase
       .from('authorized_numbers')
       .select('expires_at')
       .eq('room_number', slot.room_number)
       .or('expires_at.gt.' + now + ',expires_at.is.null');
+    if (guestErr) console.error('❌ error fetching activeGuests:', guestErr);
+    console.log('    👫 activeGuests:', activeGuests);
 
     if (activeGuests.length > 0 && slot.current_count < slot.max_devices) {
+      console.log('    ✅ slot available, pairing', from_phone, 'to room', slot.room_number);
       const expires_at = activeGuests[0].expires_at;
-      await supabase.from('authorized_numbers').insert({
-        phone: from_phone,
-        room_number: slot.room_number,
-        expires_at,
-      });
-      await supabase
+
+      // Insert using admin client and include hotel_id
+      const { data: insertedAuth, error: authErr } = await supabaseAdmin
+        .from('authorized_numbers')
+        .insert({
+          phone: from_phone,
+          room_number: slot.room_number,
+          expires_at,
+          hotel_id: slot.hotel_id,
+          is_staff: false,
+        })
+        .select();
+      if (authErr) console.error('❌ Error inserting authorized_numbers:', authErr);
+      else console.log('    ➕ inserted authorized_numbers for', from_phone, insertedAuth);
+
+      // Bump slot count using admin client
+      const { data: updatedSlot, error: updateErr } = await supabaseAdmin
         .from('room_device_slots')
         .update({ current_count: slot.current_count + 1 })
-        .eq('room_number', slot.room_number);
+        .eq('room_number', slot.room_number)
+        .select()
+        .single();
+      if (updateErr) console.error('❌ Error updating slot count:', updateErr);
+      else console.log('    ↗️  incremented slot count for room', slot.room_number, updatedSlot);
+
       return true;
     }
   }
 
+  console.log('    ❌ no slot found or slots full for', from_phone);
   return false;
 }
 
 router.post('/', async (req, res) => {
+  console.log('🚀 POST /sms hit');
   try {
     const payload = req.body?.data?.payload || {};
     const from_phone = payload.from?.phone_number;
@@ -53,17 +86,15 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: missing fields');
     }
 
-    // Dynamically ignore SMS if from one of our own Telnyx hotel numbers
+    // Ignore outgoing SMS from our own hotel number
     const { data: possibleHotel } = await supabase
       .from('hotels')
       .select('id')
       .eq('phone_number', from_phone)
       .maybeSingle();
+    if (possibleHotel) return res.status(200).send('Ignored: outgoing SMS from hotel');
 
-    if (possibleHotel) {
-      return res.status(200).send('Ignored: outgoing SMS from hotel');
-    }
-
+    // 2) Duplicate guard
     if (await findByTelnyxId(telnyxId)) {
       return res.status(200).send('Ignored: duplicate SMS');
     }
@@ -71,8 +102,8 @@ router.post('/', async (req, res) => {
     const now = new Date().toISOString();
     let isAuthorized = false;
     let isStaff = false;
-    
-    // 2) STAFF CHECK
+
+    // 3) STAFF CHECK
     try {
       const { data: authNum, error: authErr } = await supabase
         .from('authorized_numbers')
@@ -87,14 +118,13 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ Staff lookup failed:', err.message);
     }
 
-    // 3) GUEST AUTH
+    // 4) GUEST AUTH or AUTO-PAIR
     if (!isAuthorized) {
       const { data: existing } = await supabase
         .from('authorized_numbers')
         .select('room_number,expires_at')
         .eq('phone', from_phone)
         .single();
-
       if (
         existing &&
         (existing.expires_at === null || existing.expires_at > now)
@@ -105,7 +135,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 4) BLOCK unauthorized
+    // 5) BLOCK if still unauthorized
     if (!isAuthorized) {
       console.log('🚫 Blocked SMS from unauthorized phone:', from_phone);
       await sendRejectionSms(
@@ -115,34 +145,29 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: unauthorized phone');
     }
 
-    // 5) HOTEL LOOKUP
+    // 6) HOTEL LOOKUP
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
       .eq('phone_number', to)
       .single();
-    if (hotelErr || !hotel) {
-      return res.status(200).send('Ignored: unknown hotel number');
-    }
+    if (hotelErr || !hotel) return res.status(200).send('Ignored: unknown hotel number');
     const hotel_id = hotel.id;
 
-    // 6) CLASSIFY MESSAGE
+    // 7) CLASSIFY MESSAGE
     let department = 'Front Desk';
     let priority = 'normal';
     let room_number = null;
-
+    console.log('📩 Incoming SMS for classification:', message);
     try {
-      console.log('📩 Incoming SMS for classification:', message);
       const result = await classify(message, hotel_id);
       console.log('🧠 Classified via SMS route:', result);
-      department = result.department;
-      priority = result.priority;
-      room_number = result.room_number;
+      ({ department, priority, room_number } = result);
     } catch (err) {
       console.warn('⚠️ Classification failed:', err.message || err);
     }
 
-    // 7) GUEST TRACKING & VIP
+    // 8) GUEST TRACKING & VIP
     let isVip = false;
     if (!isStaff) {
       try {
@@ -151,7 +176,6 @@ router.post('/', async (req, res) => {
           .select('total_requests')
           .eq('phone_number', from_phone)
           .single();
-
         if (guest) {
           const newTotal = guest.total_requests + 1;
           isVip = newTotal > 10;
@@ -180,7 +204,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 8) INSERT REQUEST
+    // 9) INSERT REQUEST
     const inserted = await insertRequest({
       hotel_id,
       from_phone,
@@ -206,9 +230,7 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     const id = req.params.id.trim();
     const updated = await acknowledgeRequestById(id);
     if (!updated) {
-      return res
-        .status(404)
-        .json({ success: false, message: 'Request not found' });
+      return res.status(404).json({ success: false, message: 'Request not found' });
     }
     await sendConfirmationSms(updated.from_phone);
     return res.status(200).json({ success: true });
@@ -222,9 +244,7 @@ router.patch('/:id/complete', async (req, res, next) => {
     const id = req.params.id.trim();
     const updated = await completeRequestById(id);
     if (!updated) {
-      return res
-        .status(404)
-        .json({ success: false, message: 'Request not found' });
+      return res.status(404).json({ success: false, message: 'Request not found' });
     }
     return res.status(200).json({ success: true, message: 'Request completed' });
   } catch (err) {
