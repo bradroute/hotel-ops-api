@@ -155,19 +155,17 @@ router.post('/', async (req, res) => {
     const hotel_id = hotel.id;
 
     // 7) CLASSIFY MESSAGE
-    let department = 'Front Desk';
-    let priority = 'normal';
-    let room_number = null;
     console.log('📩 Incoming SMS for classification:', message);
+    let classification = { department: 'Front Desk', priority: 'normal', room_number: null };
     try {
-      const result = await classify(message, hotel_id);
-      console.log('🧠 Classified via SMS route:', result);
-      ({ department, priority, room_number } = result);
+      classification = await classify(message, hotel_id);
+      console.log('🧠 Classified via SMS route:', classification);
     } catch (err) {
       console.warn('⚠️ Classification failed:', err.message || err);
     }
+    const { department, priority, room_number } = classification;
 
-    // 8) GUEST TRACKING & VIP
+    // 8) GUEST TRACKING
     let isVip = false;
     if (!isStaff) {
       try {
