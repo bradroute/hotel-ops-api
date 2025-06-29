@@ -24,28 +24,34 @@ const keywordMapByType = {
     { keywords: ['menu','drink','restaurant','bar'], department: 'Food & Beverage' }
   ],
   apartment: [
-    { keywords: ['leak','plumbing','clog','drain'], department: 'Plumbing' },
-    { keywords: ['power','electric','outlet','breaker'], department: 'Electrical' },
-    { keywords: ['heater','ac','air conditioning','hvac'], department: 'HVAC' },
+    { keywords: ['plumbing','leak','clog','drain'], department: 'Maintenance' },
+    { keywords: ['power','electric','outlet','breaker'], department: 'Maintenance' },
+    { keywords: ['rent','lease','leasing','application'], department: 'Leasing' },
     { keywords: ['lock','door','security','entry'], department: 'Security' },
-    { keywords: ['rent','lease','leasing','application'], department: 'Leasing' }
+    { keywords: ['trash','garbage'], department: 'Resident Services' },
+    { keywords: ['package','mail'], department: 'Resident Services' },
+    { keywords: ['amenities','pool','gym'], department: 'Concierge' },
+    { keywords: ['parking','garage','space'], department: 'Parking' }
   ],
   condo: [
-    { keywords: ['lock','door','security'], department: 'Security' },
-    { keywords: ['plumbing','leak','drip'], department: 'Maintenance' },
-    { keywords: ['lift','elevator','hvac','ac'], department: 'Engineering' }
+    { keywords: ['lock','door','security','entry'], department: 'Security' },
+    { keywords: ['plumbing','leak','drip','clog'], department: 'Maintenance' },
+    { keywords: ['elevator','lift','hvac','ac'], department: 'Maintenance' },
+    { keywords: ['hoa','association','board','dues'], department: 'HOA' },
+    { keywords: ['landscape','garden','lawn'], department: 'Landscaping' }
   ],
   restaurant: [
-    { keywords: ['menu','order','dish','food'], department: 'Front of House' },
-    { keywords: ['kitchen','chef','cook','prep'], department: 'Back of House' },
-    { keywords: ['repair','broken','maintenance'], department: 'Kitchen Maintenance' },
-    { keywords: ['clean','sanitation','cleaning','cleanup'], department: 'Cleaning' },
-    { keywords: ['power','electric','light','outlet'], department: 'Electrical' },
-    { keywords: ['plumbing','leak','drip'], department: 'Plumbing' }
+    { keywords: ['menu','order','dish','food'], department: 'Kitchen' },
+    { keywords: ['table','host','hostess','reservation'], department: 'Host/Hostess' },
+    { keywords: ['drink','bar','wine','cocktail'], department: 'Bar' },
+    { keywords: ['clean','sanitation','cleanup','mop'], department: 'Cleaning' },
+    { keywords: ['delivery','takeout','uber','grubhub'], department: 'Delivery' },
+    { keywords: ['stock','inventory','supply','ingredients'], department: 'Inventory' },
+    { keywords: ['reservation','book','cancel','booking'], department: 'Reservations' },
+    { keywords: ['dishwash','dishes','plate','silverware'], department: 'Dishwashing' }
   ],
-  // fallback map if type not listed
   default: [
-    { keywords: ['issue','problem','help','assist'], department: 'General' }
+    { keywords: ['issue','problem','help','assist'], department: 'Front Desk' }
   ]
 };
 
@@ -64,12 +70,12 @@ export async function classify(text, hotelId) {
   console.log('🟦 Classifying message:', text);
   console.log('🏨 Hotel ID:', hotelId);
 
-  // 1) Fetch hotel to get its type
+  // Fetch hotel type
   const { data: hotel } = await getHotelProfile(hotelId);
-  const propertyType = hotel?.type || 'hotel';
+  const propertyType = hotel?.type?.toLowerCase() || 'hotel';
   console.log('📋 Property type:', propertyType);
 
-  // 2) Fetch enabled departments for this hotel
+  // Fetch enabled departments
   const enabled = await getEnabledDepartments(hotelId);
   if (!enabled.length) {
     console.warn(`❌ No enabled departments for hotel ${hotelId}, defaulting.`);
@@ -77,31 +83,18 @@ export async function classify(text, hotelId) {
   }
   console.log('✅ Enabled departments:', enabled);
 
-  // 3) Attempt keyword override
+  // Keyword override
   const forced = overrideDepartment(text, enabled, propertyType);
   if (forced) {
     console.log('🔁 Keyword override:', forced);
     return { department: forced, priority: 'normal', room_number: null };
   }
 
-  // 4) Build dynamic prompt for OpenAI
+  // Build prompt
   const departmentList = enabled.map((d, i) => `${i + 1}. ${d}`).join('\n');
-  const prompt = `
-You are a ${propertyType} task classifier. Given the customer message below, choose the single most appropriate department from the list:
-${departmentList}
+  const prompt = `You are a ${propertyType} task classifier. \n\nChoose the single most appropriate department from the list below:\n${departmentList}\n\nRespond ONLY with JSON: { \"department\":\"<one of above>\", \"priority\":\"urgent|normal|low\", \"room_number\":\"<if any or null>\" }\n\nMessage: \"${text}\"`;
 
-Respond ONLY with valid JSON:
-{
-  "department": "<one of the above>",
-  "priority": "urgent|normal|low",
-  "room_number": "<if found, else null>"
-}
-
-Customer message:
-"${text}"
-`.trim();
-
-  // 5) Call OpenAI
+  // Call OpenAI
   const res = await openai.chat.completions.create({
     model: 'gpt-4o',
     messages: [{ role: 'user', content: prompt }],
@@ -109,9 +102,9 @@ Customer message:
   });
 
   const raw = res.choices[0].message.content;
-  console.log('🔍 RAW CLASSIFIER OUTPUT:', raw);
+  console.log('🔍 RAW OUTPUT:', raw);
 
-  // 6) Safely parse JSON
+  // Parse JSON
   const match = raw.match(/\{[\s\S]*\}/);
   let parsed;
   try {
@@ -121,12 +114,13 @@ Customer message:
     parsed = { department: 'Front Desk', priority: 'normal', room_number: null };
   }
 
-  // 7) Validate against enabled list
+  // Validate department
   if (!enabled.includes(parsed.department)) {
-    console.warn(`🚫 Department "${parsed.department}" not enabled; defaulting to Front Desk.`);
+    console.warn(`🚫 "${parsed.department}" not enabled; defaulting to Front Desk.`);
     parsed.department = 'Front Desk';
   }
 
+  // Return standardized output
   return {
     department: parsed.department,
     priority: parsed.priority,
