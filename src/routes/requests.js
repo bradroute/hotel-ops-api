@@ -14,7 +14,6 @@ function normalizePhone(phone) {
 
 // ── Create a New Guest Request ────────────────────────────────────────
 router.post('/', async (req, res) => {
-  console.log('🛰️  POST /requests payload:', req.body);
   try {
     const { hotel_id, message, phone_number, room_number } = req.body;
 
@@ -62,7 +61,6 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { hotel_id } = req.query;
-    console.log('🌐 GET /requests — hotel_id:', hotel_id);
 
     if (!hotel_id) {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
@@ -75,8 +73,6 @@ router.get('/', async (req, res) => {
       .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
     if (reqErr) throw reqErr;
-
-    console.log('🔽 fetched requests for', hotel_id, ':', requests);
 
     // Fetch guest VIP flags
     const { data: guests = [], error: guestErr } = await supabase
@@ -100,12 +96,11 @@ router.get('/', async (req, res) => {
       staff.filter(s => s.is_staff).map(s => [normalizePhone(s.phone), true])
     );
 
-    // Enrich each request: preserve its own flags or fallback to lookups
+    // Enrich each request: preserve existing flags or fallback
     const enriched = requests.map(r => {
       const normPhone = normalizePhone(r.from_phone);
       return {
         ...r,
-        // Use the stored flag in the request first, then fallback to lookup
         is_vip: r.is_vip || !!guestMap[normPhone]?.is_vip,
         is_staff: r.is_staff || !!staffMap[normPhone]
       };
@@ -154,7 +149,7 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-// ── Get, Add, Delete Notes (unchanged) ────────────────────────────────
+// ── Get, Add, Delete Notes ────────────────────────────────────────────
 router.get('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id.trim(), 10);
