@@ -180,12 +180,37 @@ export async function getTopDepartments(startDate, endDate, hotelId) {
 
 export async function getCommonRequestWords(startDate, endDate, hotelId) {
   const stopwords = new Set([
-    'i','a','the','to','and','is','can','in','of','on','for','me','please','you',
-    'get','my','with','need','it','hi','hey','would','like','that','just','do','we',
-    'us','send','want','room','at','but','your','this','so','as','if','are','be','by',
-    'from','or','not','no','yes','ok','okay','thanks','thank','hello','good','morning',
-    'afternoon','evening','night','call','text','right','now','some'
-  ]);
+    // Personal pronouns & filler
+   'i', 'me', 'my', 'you', 'your', 'we', 'us', 'our', 'they', 'them', 'he', 'she', 'it', 'their',
+
+   // Politeness & greetings
+   'hi', 'hey', 'hello', 'good', 'morning', 'afternoon', 'evening', 'night', 'thanks', 'thank', 'please', 'ok', 'okay',
+
+   // Common verbs (non-specific)
+   'need', 'want', 'would', 'like', 'get', 'send', 'bring', 'have', 'do', 'can', 'could', 'is', 'are', 'be', 'was', 'were', 'am', 'has', 'had', 'will', 'may', 'might', 'must', 'should', 'shall',
+
+   // Articles & prepositions
+   'a', 'an', 'the', 'to', 'in', 'on', 'for', 'from', 'of', 'at', 'as', 'by', 'with', 'about', 'into', 'onto', 'over', 'under', 'out', 'up', 'down', 'off', 'through', 'around', 'between',
+
+   // Conjunctions & logic words
+   'and', 'or', 'but', 'if', 'so', 'not', 'no', 'yes', 'that', 'this', 'there', 'which', 'what', 'when', 'who', 'whom', 'where', 'why', 'how',
+
+   // Affirmatives & confirmations
+   'right', 'now', 'some', 'any', 'all', 'just', 'too', 'more', 'less', 'still', 'again', 'another', 'same',
+
+   // Time references
+   'today', 'tonight', 'tomorrow', 'soon', 'later', 'before', 'after',
+
+   // Device or instruction-related
+   'call', 'text', 'message', 'reply',
+
+   // Rooms (redundant contextually)
+   'room', 'suite', 'number', 'door',
+
+   // Vague requests
+   'something', 'thing', 'stuff', 'items'
+   ]);
+  
   const { data, error } = await supabase
     .from('requests')
     .select('message')
