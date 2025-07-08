@@ -1,3 +1,4 @@
+// hotel-ops-api/src/app.js
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -7,6 +8,7 @@ import requestsRouter from './routes/requests.js';
 import smsRouter from './routes/sms.js';
 import analyticsRouter from './routes/analytics.js';
 import webformRouter from './routes/webform.js';
+import paymentsRouter from './routes/payments.js';  // Stripe payments routes
 
 const app = express();
 app.set('trust proxy', 1);
@@ -31,6 +33,9 @@ app.use(
   rateLimit({ windowMs: 60_000, max: 10, message: 'Too many SMS calls.' }),
   smsRouter
 );
+
+// Stripe payments routes
+app.use('/api', paymentsRouter);
 
 // 404 fallback
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
