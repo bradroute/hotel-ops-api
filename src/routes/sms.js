@@ -203,7 +203,6 @@ router.post('/', async (req, res) => {
       is_vip: isVip,
       telnyx_id: telnyxId,
     });
-
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
   }
@@ -219,13 +218,11 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
-
-    const ackText = 'Operon: Your request has been received and is being worked on.';
-    console.log('⏳ Acknowledge SMS text:', ackText);
-
-    // Pass that exact string as the second argument:
-    await sendConfirmationSms(updated.from_phone, ackText);
-
+    // Custom “we’re on it” ack (wrapper appends STOP/HELP)
+    await sendConfirmationSms(
+      updated.from_phone,
+      'Operon: Your request has been received and is being worked on.'
+    );
     return res.status(200).json({ success: true });
   } catch (err) {
     next(err);
