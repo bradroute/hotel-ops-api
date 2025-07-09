@@ -1,3 +1,4 @@
+// src/routes/analytics.js
 import express from 'express';
 import * as supabaseService from '../services/supabaseService.js';
 
@@ -5,7 +6,8 @@ const router = express.Router();
 
 router.get('/full', async (req, res) => {
   try {
-    const { hotelId, startDate, endDate } = req.query;
+    // Read hotel_id from query string (underscore) to match front-end
+    const { hotel_id: hotelId, startDate, endDate } = req.query;
     if (!hotelId || !startDate || !endDate) {
       return res.status(400).json({ error: 'Missing required query params' });
     }
@@ -46,7 +48,8 @@ router.get('/full', async (req, res) => {
       supabaseService.getRequestsPerDay(startISO, endISO, hotelId),
       supabaseService.getTopDepartments(startISO, endISO, hotelId),
       supabaseService.getCommonRequestWords(startISO, endISO, hotelId),
-      supabaseService.getVIPGuestCount(startISO, endISO),
+      // Now scoped by hotelId
+      supabaseService.getVIPGuestCount(startISO, endISO, hotelId),
       supabaseService.getRepeatRequestRate(startISO, endISO, hotelId),
       supabaseService.getEstimatedRevenue(startISO, endISO, hotelId),
       supabaseService.getLaborTimeSaved(startISO, endISO, hotelId),

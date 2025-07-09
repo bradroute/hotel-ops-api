@@ -24,13 +24,15 @@ router.post('/', async (req, res) => {
     const { department, priority, room_number: extractedRoom } = await classify(message, hotel_id);
     const finalRoom = extractedRoom || room_number;
 
-    const { data: guestData } = await supabase
+    // Ensure guest exists or update last_seen
+    const { data: existingGuest } = await supabase
       .from('guests')
       .select('is_vip')
       .eq('phone_number', phone_number)
       .eq('hotel_id', hotel_id)
       .maybeSingle();
 
+    // Ensure staff status
     const { data: staffData } = await supabase
       .from('authorized_numbers')
       .select('is_staff')
@@ -46,7 +48,7 @@ router.post('/', async (req, res) => {
       priority,
       room_number: finalRoom,
       is_staff: staffData?.is_staff || false,
-      is_vip: guestData?.is_vip || false,
+      is_vip: existingGuest?.is_vip || false,
       telnyx_id: null
     });
 
@@ -81,14 +83,13 @@ router.get('/', async (req, res) => {
       .eq('hotel_id', hotel_id);
     if (guestErr) throw guestErr;
 
-    // Fetch staff numbers as fallback
+    // Fetch staff numbers
     const { data: staff = [], error: staffErr } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff')
       .eq('hotel_id', hotel_id);
     if (staffErr) throw staffErr;
 
-    // Create maps for quick lookup
     const guestMap = Object.fromEntries(
       guests.map(g => [normalizePhone(g.phone_number), g])
     );
@@ -96,7 +97,6 @@ router.get('/', async (req, res) => {
       staff.filter(s => s.is_staff).map(s => [normalizePhone(s.phone), true])
     );
 
-    // Enrich each request: preserve existing flags or fallback
     const enriched = requests.map(r => {
       const normPhone = normalizePhone(r.from_phone);
       return {
@@ -116,8 +116,13 @@ router.get('/', async (req, res) => {
 // ── Acknowledge a Request ─────────────────────────────────────────────
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
+    const { hotel_id } = req.query;
+    if (!hotel_id) {
+      return res.status(400).json({ error: 'Missing hotel_id in query.' });
+    }
+
     const id = req.params.id.trim();
-    const updated = await acknowledgeRequestById(id);
+    const updated = await acknowledgeRequestById(id, hotel_id);
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
@@ -141,11 +146,17 @@ router.post('/:id/acknowledge', async (req, res, next) => {
 // ── Complete a Request ────────────────────────────────────────────────
 router.post('/:id/complete', async (req, res, next) => {
   try {
+    const { hotel_id } = req.query;
+    if (!hotel_id) {
+      return res.status(400).json({ error: 'Missing hotel_id in query.' });
+    }
+
     const id = req.params.id.trim();
-    const updated = await completeRequestById(id);
+    const updated = await completeRequestById(id, hotel_id);
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
+
     res.json({ success: true, updated });
   } catch (err) {
     next(err);
