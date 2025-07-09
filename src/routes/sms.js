@@ -1,4 +1,5 @@
 // src/routes/sms.js
+
 import express from 'express';
 import { supabase, supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 import { sendRejectionSms, sendConfirmationSms } from '../services/telnyxService.js';
@@ -38,7 +39,7 @@ async function tryAutoPair(from_phone) {
       console.log('    ✅ pairing', from_phone, 'to room', slot.room_number);
       const expires_at = activeGuests[0].expires_at;
 
-      // insert authorized number
+      // Insert authorized number
       const { data: insertedAuth, error: authErr } = await supabaseAdmin
         .from('authorized_numbers')
         .insert({
@@ -51,7 +52,7 @@ async function tryAutoPair(from_phone) {
         .select();
       if (authErr) console.error('❌ insert auth failed:', authErr);
 
-      // bump slot count
+      // Bump slot count
       const { error: updateErr } = await supabaseAdmin
         .from('room_device_slots')
         .update({ current_count: slot.current_count + 1 })
@@ -141,7 +142,7 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: unauthorized phone');
     }
 
-    // 7) Opt-in confirmation (approved text)
+    // 7) Opt-in confirmation (must match approved text)
     await sendConfirmationSms(
       from_phone,
       'Operon: Thanks for contacting Operon on behalf of The Crosby Hotel. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. Reply STOP to unsubscribe or HELP for assistance. We will not sell or share your mobile information for promotional or marketing purposes.'
@@ -217,7 +218,7 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
-    // Custom “we’re on it” ack (footer auto-appended)
+    // Custom “we’re on it” ack (wrapper appends STOP/HELP)
     await sendConfirmationSms(
       updated.from_phone,
       'Operon: Your request has been received and is being worked on.'
