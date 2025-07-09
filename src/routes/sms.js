@@ -81,7 +81,7 @@ router.post('/', async (req, res) => {
       return res.status(200).send('Ignored: missing fields');
     }
 
-    // 2) Ignore outgoing from hotel
+    // 2) Ignore outgoing from hotel number
     const { data: possibleHotel } = await supabase
       .from('hotels')
       .select('id')
@@ -122,6 +122,7 @@ router.post('/', async (req, res) => {
         .select('room_number,expires_at')
         .eq('phone', from_phone)
         .single();
+
       if (
         existing &&
         (existing.expires_at === null || existing.expires_at > now)
@@ -168,7 +169,7 @@ router.post('/', async (req, res) => {
     }
     const { department, priority, room_number } = classification;
 
-    // 10) Guest tracking (VIP)
+    // 10) Guest tracking (VIP logic)
     let isVip = false;
     if (!isStaff) {
       const { data: guest } = await supabase
@@ -210,7 +211,7 @@ router.post('/', async (req, res) => {
   return res.status(200).json({ success: true });
 });
 
-// Acknowledge endpoint (button)
+// Acknowledge endpoint (button press)
 router.patch('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
