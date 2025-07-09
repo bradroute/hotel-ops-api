@@ -1,22 +1,28 @@
 // src/services/telnyxService.js
-
 import fetch from 'node-fetch';
-import { telnyxApiKey, telnyxNumber, telnyxMessagingProfileId } from '../config/index.js';
+import {
+  telnyxApiKey,
+  telnyxNumber,
+  telnyxMessagingProfileId
+} from '../config/index.js';
+
+const COMPLIANCE_FOOTER = ' Reply HELP for assistance or STOP to unsubscribe.';
 
 /**
- * Send the standard confirmation message back to a guest.
+ * Send any confirmation-style SMS (opt-in or acknowledge).
+ * The `text` arg should be your custom message body.
  */
-export async function sendConfirmationSms(destinationNumber) {
+export async function sendConfirmationSms(destinationNumber, text) {
   const toNumber = typeof destinationNumber === 'string'
     ? destinationNumber
     : destinationNumber?.phone_number;
 
-  console.log('📨 telnyxService: sending confirmation from', telnyxNumber, 'to', toNumber);
+  console.log('📨 Sending confirmation SMS to', toNumber);
 
   const smsPayload = {
     from: telnyxNumber,
     to: toNumber,
-    text: 'Hi! Your request has been received and is being taken care of. - Hotel Crosby',
+    text: `${text}${COMPLIANCE_FOOTER}`,
     messaging_profile_id: telnyxMessagingProfileId,
   };
 
@@ -31,28 +37,27 @@ export async function sendConfirmationSms(destinationNumber) {
 
   const data = await response.json();
   if (!response.ok) {
-    console.error('❌ telnyxService: confirmation SMS error:', data);
+    console.error('❌ Confirmation SMS error:', data);
     throw Object.assign(new Error('Telnyx send failed'), { payload: data });
   }
-
-  console.log('📨 telnyxService: confirmation SMS sent:', data);
+  console.log('✅ Confirmation SMS sent:', data);
   return data;
 }
 
 /**
- * Send a rejection/“please activate” message to unauthorized numbers.
+ * Send a rejection/“please activate” SMS.
  */
 export async function sendRejectionSms(destinationNumber, text) {
   const toNumber = typeof destinationNumber === 'string'
     ? destinationNumber
     : destinationNumber?.phone_number;
 
-  console.log('📨 telnyxService: sending rejection from', telnyxNumber, 'to', toNumber);
+  console.log('📨 Sending rejection SMS to', toNumber);
 
   const smsPayload = {
     from: telnyxNumber,
     to: toNumber,
-    text,
+    text: `${text}${COMPLIANCE_FOOTER}`,
     messaging_profile_id: telnyxMessagingProfileId,
   };
 
@@ -67,10 +72,9 @@ export async function sendRejectionSms(destinationNumber, text) {
 
   const data = await response.json();
   if (!response.ok) {
-    console.error('❌ telnyxService: rejection SMS error:', data);
+    console.error('❌ Rejection SMS error:', data);
     throw Object.assign(new Error('Telnyx send failed'), { payload: data });
   }
-
-  console.log('📨 telnyxService: rejection SMS sent:', data);
+  console.log('✅ Rejection SMS sent:', data);
   return data;
 }
