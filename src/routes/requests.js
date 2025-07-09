@@ -123,7 +123,10 @@ router.post('/:id/acknowledge', async (req, res, next) => {
     }
 
     try {
-      const smsResult = await sendConfirmationSms(updated.from_phone);
+      const smsResult = await sendConfirmationSms(
+        updated.from_phone,
+        'Operon: Your request has been received and is being worked on.'
+      );
       console.log('📨 Confirmation SMS sent:', smsResult);
     } catch (smsErr) {
       console.error('❌ Confirmation SMS failed:', smsErr);

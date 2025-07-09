@@ -218,11 +218,13 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
-    // Custom “we’re on it” ack (wrapper appends STOP/HELP)
+
+    // Send custom “we’re on it” acknowledgement SMS
     await sendConfirmationSms(
       updated.from_phone,
       'Operon: Your request has been received and is being worked on.'
     );
+
     return res.status(200).json({ success: true });
   } catch (err) {
     next(err);
