@@ -66,6 +66,9 @@ function overrideDepartment(text, enabledDepartments, propertyType) {
   return null;
 }
 
+/**
+ * DEPARTMENT AND PRIORITY CLASSIFICATION
+ */
 export async function classify(text, hotelId) {
   console.log('🟦 Classifying message:', text);
   console.log('🏨 Hotel ID:', hotelId);
@@ -92,7 +95,7 @@ export async function classify(text, hotelId) {
 
   // Build prompt
   const departmentList = enabled.map((d, i) => `${i + 1}. ${d}`).join('\n');
-  const prompt = `You are a ${propertyType} task classifier. \n\nChoose the single most appropriate department from the list below:\n${departmentList}\n\nRespond ONLY with JSON: { \"department\":\"<one of above>\", \"priority\":\"urgent|normal|low\", \"room_number\":\"<if any or null>\" }\n\nMessage: \"${text}\"`;
+  const prompt = `You are a ${propertyType} task classifier. \n\nChoose the single most appropriate department from the list below:\n${departmentList}\n\nRespond ONLY with JSON: { "department":"<one of above>", "priority":"high|normal|low", "room_number":"<if any or null>" }\n\nMessage: "${text}"`;
 
   // Call OpenAI
   const res = await openai.chat.completions.create({
@@ -126,4 +129,57 @@ export async function classify(text, hotelId) {
     priority: parsed.priority,
     room_number: parsed.room_number
   };
+}
+
+/**
+ * AI ENRICHMENT FOR REQUEST ANALYTICS (NO THEME FIELD)
+ */
+export async function enrichRequest(text) {
+  const prompt = `
+You are an AI assistant for hotel operations.
+Extract the following from the guest request:
+- summary: 3-6 word actionable summary
+- root_cause: concise phrase (e.g., "HVAC not working")
+- sentiment: positive, neutral, or negative
+- priority: high, normal, or low (based on urgency)
+- needs_attention: true if management should review, else false
+
+Respond ONLY with JSON in this format:
+{
+  "summary": "",
+  "root_cause": "",
+  "sentiment": "",
+  "priority": "",
+  "needs_attention": false
+}
+
+Guest request: "${text}"
+`;
+
+  const res = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.2
+  });
+
+  const raw = res.choices[0].message.content;
+  console.log('🧠 Enrichment RAW OUTPUT:', raw);
+
+  // Parse JSON
+  const match = raw.match(/\{[\s\S]*\}/);
+  let parsed;
+  try {
+    parsed = JSON.parse(match ? match[0] : raw);
+  } catch (e) {
+    console.error('❌ Enrichment JSON parsing error:', e);
+    parsed = {
+      summary: null,
+      root_cause: null,
+      sentiment: null,
+      priority: null,
+      needs_attention: false
+    };
+  }
+
+  return parsed;
 }

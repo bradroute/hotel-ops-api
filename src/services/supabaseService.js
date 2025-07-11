@@ -10,6 +10,7 @@ if (typeof globalThis.WebSocket === 'undefined') {
 import { createClient } from '@supabase/supabase-js';
 import { supabaseUrl, supabaseKey, supabaseServiceRoleKey } from '../config/index.js';
 import { estimateOrderRevenue } from './menuCatalog.js';
+import { enrichRequest } from './classifier.js'; // <-- AI enrichment import
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: { enabled: false }
@@ -18,6 +19,7 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
   realtime: { enabled: false }
 });
+
 /** ──────────────────────────────────────────────────────────────
  * REQUESTS CRUD
  */
@@ -33,6 +35,15 @@ export async function insertRequest({
   is_vip
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
+
+  // --- AI ENRICHMENT STEP ---
+  let enrichment = {};
+  try {
+    enrichment = await enrichRequest(message);
+    console.log('🧠 AI enrichment:', enrichment);
+  } catch (err) {
+    console.error('❌ AI enrichment failed:', err);
+  }
 
   // Ensure guest exists or update last_seen
   const { data: existingGuest } = await supabase
@@ -79,12 +90,16 @@ export async function insertRequest({
     from_phone,
     message,
     department,
-    priority,
+    priority: enrichment.priority || priority, // AI-enriched if available, else original
     room_number,
     telnyx_id,
     estimated_revenue,
     is_staff,
-    is_vip
+    is_vip,
+    summary: enrichment.summary || null,         // AI enrichment
+    root_cause: enrichment.root_cause || null,  // AI enrichment
+    sentiment: enrichment.sentiment || null,    // AI enrichment
+    needs_attention: enrichment.needs_attention ?? false // AI enrichment
   };
   console.log('🔽 insertRequest payload:', payload);
 
@@ -102,6 +117,7 @@ export async function insertRequest({
 
   return requestRows[0];
 }
+
 /** ──────────────────────────────────────────────────────────────
  * ANALYTICS CORE FUNCTIONS (PHASE 1 + 2)
  */
@@ -182,35 +198,25 @@ export async function getCommonRequestWords(startDate, endDate, hotelId) {
   const stopwords = new Set([
     // Personal pronouns & filler
    'i', 'me', 'my', 'you', 'your', 'we', 'us', 'our', 'they', 'them', 'he', 'she', 'it', 'their',
-
    // Politeness & greetings
    'hi', 'hey', 'hello', 'good', 'morning', 'afternoon', 'evening', 'night', 'thanks', 'thank', 'please', 'ok', 'okay',
-
    // Common verbs (non-specific)
    'need', 'want', 'would', 'like', 'get', 'send', 'bring', 'have', 'do', 'can', 'could', 'is', 'are', 'be', 'was', 'were', 'am', 'has', 'had', 'will', 'may', 'might', 'must', 'should', 'shall',
-
    // Articles & prepositions
    'a', 'an', 'the', 'to', 'in', 'on', 'for', 'from', 'of', 'at', 'as', 'by', 'with', 'about', 'into', 'onto', 'over', 'under', 'out', 'up', 'down', 'off', 'through', 'around', 'between',
-
    // Conjunctions & logic words
    'and', 'or', 'but', 'if', 'so', 'not', 'no', 'yes', 'that', 'this', 'there', 'which', 'what', 'when', 'who', 'whom', 'where', 'why', 'how',
-
    // Affirmatives & confirmations
    'right', 'now', 'some', 'any', 'all', 'just', 'too', 'more', 'less', 'still', 'again', 'another', 'same',
-
    // Time references
    'today', 'tonight', 'tomorrow', 'soon', 'later', 'before', 'after',
-
    // Device or instruction-related
    'call', 'text', 'message', 'reply',
-
    // Rooms (redundant contextually)
    'room', 'suite', 'number', 'door',
-
    // Vague requests
    'something', 'thing', 'stuff', 'items'
    ]);
-  
   const { data, error } = await supabase
     .from('requests')
     .select('message')
@@ -262,9 +268,6 @@ export async function getRepeatRequestRate(startDate, endDate, hotelId) {
 
 export const getMissedSLAs = getMissedSLACount;
 
-/** ─────────────────────────────────────────────────────────────
- * PHASE 3: ROI METRICS
- */
 export async function getEstimatedRevenue(startDate, endDate, hotelId) {
   const { data, error } = await supabase
     .from('requests')
@@ -502,19 +505,15 @@ export async function getEnabledDepartments(hotelId) {
 
   if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
 
-  console.log('📦 Raw fetchEnabled response:', data);
-
   const enabled = data
     .filter(row =>
       row.enabled === true ||
       row.enabled === 'true' ||
       row.enabled === 'TRUE' ||
-      row.enabled === 1 ||        // integer true
-      row.enabled === '1'         // string true
+      row.enabled === 1 ||
+      row.enabled === '1'
     )
     .map(row => row.department);
-
-  console.log('✅ Enabled departments:', enabled);
 
   return enabled;
 }
@@ -550,7 +549,6 @@ export async function updateHotelProfile(hotelId, updates) {
     .eq("id", hotelId);
   return error;
 }
-// Fetch SLA settings for this hotel
 export async function getSlaSettings(hotelId) {
   const { data, error } = await supabase
     .from('sla_settings')
@@ -558,8 +556,6 @@ export async function getSlaSettings(hotelId) {
     .eq('hotel_id', hotelId);
   return { data, error };
 }
-
-// Upsert SLA settings
 export async function upsertSlaSettings(hotelId, slaMap) {
   // slaMap: { [dept]: { ack_time, res_time, is_active } }
   const payload = Object.entries(slaMap).map(([department, { ack_time, res_time, is_active }]) => ({
