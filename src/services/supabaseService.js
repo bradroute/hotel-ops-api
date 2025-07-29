@@ -195,15 +195,25 @@ export async function getTopDepartments(startDate, endDate, hotelId) {
 
 export async function getCommonRequestWords(startDate, endDate, hotelId) {
   const stopwords = new Set([
+    // Personal pronouns & filler
    'i', 'me', 'my', 'you', 'your', 'we', 'us', 'our', 'they', 'them', 'he', 'she', 'it', 'their',
+   // Politeness & greetings
    'hi', 'hey', 'hello', 'good', 'morning', 'afternoon', 'evening', 'night', 'thanks', 'thank', 'please', 'ok', 'okay',
+   // Common verbs (non-specific)
    'need', 'want', 'would', 'like', 'get', 'send', 'bring', 'have', 'do', 'can', 'could', 'is', 'are', 'be', 'was', 'were', 'am', 'has', 'had', 'will', 'may', 'might', 'must', 'should', 'shall',
+   // Articles & prepositions
    'a', 'an', 'the', 'to', 'in', 'on', 'for', 'from', 'of', 'at', 'as', 'by', 'with', 'about', 'into', 'onto', 'over', 'under', 'out', 'up', 'down', 'off', 'through', 'around', 'between',
+   // Conjunctions & logic words
    'and', 'or', 'but', 'if', 'so', 'not', 'no', 'yes', 'that', 'this', 'there', 'which', 'what', 'when', 'who', 'whom', 'where', 'why', 'how',
+   // Affirmatives & confirmations
    'right', 'now', 'some', 'any', 'all', 'just', 'too', 'more', 'less', 'still', 'again', 'another', 'same',
+   // Time references
    'today', 'tonight', 'tomorrow', 'soon', 'later', 'before', 'after',
+   // Device or instruction-related
    'call', 'text', 'message', 'reply',
+   // Rooms (redundant contextually)
    'room', 'suite', 'number', 'door',
+   // Vague requests
    'something', 'thing', 'stuff', 'items'
    ]);
   const { data, error } = await supabase
@@ -268,26 +278,19 @@ export async function getEstimatedRevenue(startDate, endDate, hotelId) {
   return data.reduce((sum,r) => sum + (r.estimated_revenue || 0), 0);
 }
 
-/** ──────────────────────────────────────────────
- * UPDATED LABOR TIME SAVED LOGIC (flat estimate per request)
- */
+// ------------- UPDATED LABOR TIME SAVED ANALYTICS BELOW -------------
+
+// Flat estimate: 4 minutes saved per request
 export async function getLaborTimeSaved(startDate, endDate, hotelId) {
-  const totalRequests = await getTotalRequests(startDate, endDate, hotelId);
-  const MINUTES_SAVED_PER_REQUEST = 4; // Adjust as needed (3-5 is typical)
-  return totalRequests * MINUTES_SAVED_PER_REQUEST;
+  const total = await getTotalRequests(startDate, endDate, hotelId);
+  const MINUTES_SAVED_PER_REQUEST = 4;
+  return total * MINUTES_SAVED_PER_REQUEST;
 }
 
-/** ──────────────────────────────────────────────
- * DEPRECATED: Remove or ignore this function
- */
-// export async function getEnhancedLaborTimeSaved(startDate,endDate,hotelId) {
-//   const [missed, avgComp, total] = await Promise.all([
-//     getMissedSLACount(startDate,endDate,hotelId),
-//     getAvgCompletionTime(startDate,endDate,hotelId),
-//     getTotalRequests(startDate,endDate,hotelId)
-//   ]);
-//   return parseFloat((missed*5 + total*avgComp*0.1).toFixed(2));
-// }
+// For compatibility—returns same as above (frontend expects this field)
+export const getEnhancedLaborTimeSaved = getLaborTimeSaved;
+
+// --------------------------------------------------------------------
 
 export async function getServiceScoreEstimate(startDate, endDate, hotelId) {
   const { data, error } = await supabase
