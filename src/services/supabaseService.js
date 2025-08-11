@@ -31,7 +31,14 @@ export async function insertRequest({
   room_number,
   telnyx_id,
   is_staff,
-  is_vip
+  is_vip,
+  // ✅ NEW: persist the request source (defaults to app_guest so DB doesn't fall back to 'sms')
+  source = 'app_guest',
+  // optional enrichment passthroughs (kept if you want to override)
+  summary,
+  root_cause,
+  sentiment,
+  needs_attention,
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
@@ -60,7 +67,8 @@ export async function insertRequest({
       last_seen: new Date().toISOString()
     });
   } else {
-    await supabase.from('guests')
+    await supabase
+      .from('guests')
       .update({ last_seen: new Date().toISOString() })
       .eq('id', existingGuest.id);
   }
@@ -89,32 +97,39 @@ export async function insertRequest({
     from_phone,
     message,
     department,
-    priority: enrichment.priority || priority, // AI-enriched if available, else original
+    // keep caller-provided priority unless enrichment suggests one
+    priority: enrichment.priority || priority || 'normal',
     room_number,
-    telnyx_id,
+    telnyx_id: telnyx_id ?? null,
     estimated_revenue,
-    is_staff,
-    is_vip,
-    summary: enrichment.summary || null,         // AI enrichment
-    root_cause: enrichment.root_cause || null,  // AI enrichment
-    sentiment: enrichment.sentiment || null,    // AI enrichment
-    needs_attention: enrichment.needs_attention ?? false // AI enrichment
+    is_staff: !!is_staff,
+    is_vip: !!is_vip,
+    // ✅ ensure 'source' is stored (enum: 'sms' | 'app_guest' | 'app_staff')
+    source: source || 'app_guest',
+    // AI enrichment (caller-provided fields win if passed)
+    summary: summary ?? enrichment.summary ?? null,
+    root_cause: root_cause ?? enrichment.root_cause ?? null,
+    sentiment: sentiment ?? enrichment.sentiment ?? null,
+    needs_attention: typeof needs_attention === 'boolean'
+      ? needs_attention
+      : (enrichment.needs_attention ?? false),
   };
   console.log('🔽 insertRequest payload:', payload);
 
   // Insert into requests table
-  const { data: requestRows, error: reqErr } = await supabase
+  const { data, error } = await supabase
     .from('requests')
     .insert([payload])
-    .select();
+    .select('*')
+    .single(); // return a single row
 
-  if (reqErr) {
-    console.error('❌ Supabase “requests” INSERT error:', reqErr);
-    throw new Error(reqErr.message);
+  if (error) {
+    console.error('❌ Supabase “requests” INSERT error:', error);
+    throw new Error(error.message);
   }
-  console.log('✅ Supabase “requests” INSERT succeeded:', requestRows);
+  console.log('✅ Supabase “requests” INSERT succeeded:', data);
 
-  return requestRows[0];
+  return data;
 }
 
 /** ──────────────────────────────────────────────────────────────
@@ -195,27 +210,17 @@ export async function getTopDepartments(startDate, endDate, hotelId) {
 
 export async function getCommonRequestWords(startDate, endDate, hotelId) {
   const stopwords = new Set([
-    // Personal pronouns & filler
-   'i', 'me', 'my', 'you', 'your', 'we', 'us', 'our', 'they', 'them', 'he', 'she', 'it', 'their',
-   // Politeness & greetings
-   'hi', 'hey', 'hello', 'good', 'morning', 'afternoon', 'evening', 'night', 'thanks', 'thank', 'please', 'ok', 'okay',
-   // Common verbs (non-specific)
-   'need', 'want', 'would', 'like', 'get', 'send', 'bring', 'have', 'do', 'can', 'could', 'is', 'are', 'be', 'was', 'were', 'am', 'has', 'had', 'will', 'may', 'might', 'must', 'should', 'shall',
-   // Articles & prepositions
-   'a', 'an', 'the', 'to', 'in', 'on', 'for', 'from', 'of', 'at', 'as', 'by', 'with', 'about', 'into', 'onto', 'over', 'under', 'out', 'up', 'down', 'off', 'through', 'around', 'between',
-   // Conjunctions & logic words
-   'and', 'or', 'but', 'if', 'so', 'not', 'no', 'yes', 'that', 'this', 'there', 'which', 'what', 'when', 'who', 'whom', 'where', 'why', 'how',
-   // Affirmatives & confirmations
-   'right', 'now', 'some', 'any', 'all', 'just', 'too', 'more', 'less', 'still', 'again', 'another', 'same',
-   // Time references
-   'today', 'tonight', 'tomorrow', 'soon', 'later', 'before', 'after',
-   // Device or instruction-related
-   'call', 'text', 'message', 'reply',
-   // Rooms (redundant contextually)
-   'room', 'suite', 'number', 'door',
-   // Vague requests
-   'something', 'thing', 'stuff', 'items'
-   ]);
+    'i','me','my','you','your','we','us','our','they','them','he','she','it','their',
+    'hi','hey','hello','good','morning','afternoon','evening','night','thanks','thank','please','ok','okay',
+    'need','want','would','like','get','send','bring','have','do','can','could','is','are','be','was','were','am','has','had','will','may','might','must','should','shall',
+    'a','an','the','to','in','on','for','from','of','at','as','by','with','about','into','onto','over','under','out','up','down','off','through','around','between',
+    'and','or','but','if','so','not','no','yes','that','this','there','which','what','when','who','whom','where','why','how',
+    'right','now','some','any','all','just','too','more','less','still','again','another','same',
+    'today','tonight','tomorrow','soon','later','before','after',
+    'call','text','message','reply',
+    'room','suite','number','door',
+    'something','thing','stuff','items'
+  ]);
   const { data, error } = await supabase
     .from('requests')
     .select('message')
@@ -280,14 +285,12 @@ export async function getEstimatedRevenue(startDate, endDate, hotelId) {
 
 // ------------- UPDATED LABOR TIME SAVED ANALYTICS BELOW -------------
 
-// Flat estimate: 4 minutes saved per request
 export async function getLaborTimeSaved(startDate, endDate, hotelId) {
   const total = await getTotalRequests(startDate, endDate, hotelId);
   const MINUTES_SAVED_PER_REQUEST = 4;
   return total * MINUTES_SAVED_PER_REQUEST;
 }
 
-// For compatibility—returns same as above (frontend expects this field)
 export const getEnhancedLaborTimeSaved = getLaborTimeSaved;
 
 // --------------------------------------------------------------------
@@ -532,22 +535,24 @@ export async function getAllDepartmentSettings(hotelId) {
   if (error) throw new Error(`getAllDepartmentSettings: ${error.message}`);
   return data;
 }
+
 export async function getHotelProfile(hotelId) {
   const { data, error } = await supabase
-    .from("hotels")
-    .select("*")
-    .eq("id", hotelId)
+    .from('hotels')
+    .select('*')
+    .eq('id', hotelId)
     .single();
   return { data, error };
 }
 
 export async function updateHotelProfile(hotelId, updates) {
   const { error } = await supabase
-    .from("hotels")
+    .from('hotels')
     .update(updates)
-    .eq("id", hotelId);
+    .eq('id', hotelId);
   return error;
 }
+
 export async function getSlaSettings(hotelId) {
   const { data, error } = await supabase
     .from('sla_settings')
@@ -555,8 +560,8 @@ export async function getSlaSettings(hotelId) {
     .eq('hotel_id', hotelId);
   return { data, error };
 }
+
 export async function upsertSlaSettings(hotelId, slaMap) {
-  // slaMap: { [dept]: { ack_time, res_time, is_active } }
   const payload = Object.entries(slaMap).map(([department, { ack_time, res_time, is_active }]) => ({
     hotel_id: hotelId,
     department,
