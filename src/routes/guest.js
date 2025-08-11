@@ -21,18 +21,14 @@ function toE164(v = '') {
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 }
 
-// Simple health check
 router.get('/ping', (_req, res) => res.json({ pong: true }));
 
 /**
  * POST /guest/start
  * Body: { name?, phone, propertyCode, lat, lng }
+ *  - propertyCode must match hotels.guest_code
  * Returns:
- *  - authorized: boolean
- *  - property_id/hotel_id: string (compat fields)
- *  - distance_m, radius_m
- *  - expires_at? (if authorized)
- *  - reason? (if not authorized)
+ *  { authorized: boolean, hotel_id?, distance_m?, radius_m?, expires_at?, reason? }
  */
 router.post('/start', async (req, res) => {
   try {
@@ -45,28 +41,29 @@ router.post('/start', async (req, res) => {
       return res.status(400).json({ error: 'missing_coords' });
     }
 
-    // Supabase client provided via app.locals (set in src/index.js)
     const supabase = req.app?.locals?.supabase;
     if (!supabase) return res.status(500).json({ error: 'supabase_not_initialized' });
 
-    // Look up property by property_code (adjust table/columns if yours differ)
-    const { data: property, error: pErr } = await supabase
-      .from('properties')
-      .select('id, property_code, latitude, longitude, is_active, geo_radius_meters')
-      .eq('property_code', propertyCode.trim())
+    // Lookup by guest_code in hotels
+    const { data: hotel, error: hErr } = await supabase
+      .from('hotels')
+      .select('id, guest_code, latitude, longitude, is_active')
+      .eq('guest_code', propertyCode.trim())
       .maybeSingle();
 
-    if (pErr) throw pErr;
-    if (!property || property.is_active === false) {
-      return res.status(404).json({ error: 'property_not_found' });
+    if (hErr) {
+      console.error('[guest/start] hotels lookup error:', hErr);
+      return res.status(500).json({ error: 'db_error' });
+    }
+    if (!hotel || hotel.is_active === false) {
+      return res.status(404).json({ error: 'hotel_not_found' });
     }
 
-    const radius = Number(property.geo_radius_meters) || DEFAULT_GEOFENCE_METERS;
+    const radius = DEFAULT_GEOFENCE_METERS; // per-table radius not in schema; use default/env
     const distance = distanceMeters(
       { lat, lng },
-      { lat: Number(property.latitude), lng: Number(property.longitude) }
+      { lat: Number(hotel.latitude), lng: Number(hotel.longitude) }
     );
-
     if (Number.isNaN(distance)) return res.status(400).json({ error: 'invalid_coords' });
 
     if (distance > radius) {
@@ -78,34 +75,29 @@ router.post('/start', async (req, res) => {
       });
     }
 
-    // Optionally authorize the number for a limited window (24h)
+    // Authorize phone for 24h (overwrites prior because phone is PK)
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    // If your schema is authorized_numbers(phone, property_id, expires_at, is_staff)
-    // adjust the upsert and onConflict to match your schema/indexes.
-    try {
-      await supabase
-        .from('authorized_numbers')
-        .upsert(
-          {
-            phone: e164,
-            property_id: property.id, // if your schema uses hotel_id instead, set that too or swap column name
-            is_staff: false,
-            expires_at: expiresAt,
-            name: name?.trim() || null,
-          },
-          { onConflict: 'phone,property_id' }
-        );
-    } catch (authErr) {
-      // Don’t fail the whole request if upsert key differs; just log.
-      console.error('authorized_numbers upsert warning:', authErr?.message || authErr);
+    const upsertRow = {
+      phone: e164,
+      hotel_id: hotel.id,
+      is_staff: false,
+      expires_at: expiresAt,
+      // room_number: null, // optional
+    };
+
+    const { error: aErr } = await supabase
+      .from('authorized_numbers')
+      .upsert(upsertRow, { onConflict: 'phone' }); // phone is PK in your schema
+
+    if (aErr) {
+      // Don’t block authorization on bookkeeping failure; just log.
+      console.error('[guest/start] authorized_numbers upsert error:', aErr);
     }
 
-    // Return both property_id and hotel_id for frontend compatibility
     return res.status(200).json({
       authorized: true,
-      property_id: property.id,
-      hotel_id: property.id, // compat with older clients expecting hotel_id
+      hotel_id: hotel.id,
       expires_at: expiresAt,
       distance_m: Math.round(distance),
       radius_m: radius,
