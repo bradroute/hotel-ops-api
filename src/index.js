@@ -10,6 +10,7 @@ import webformRouter from './routes/webform.js';
 import smsRouter from './routes/sms.js';
 import roomsRouter from './routes/rooms.js';
 import paymentsRouter from './routes/payments.js';  // Stripe setup & customer routes
+import verifyRouter from './routes/verify.js';      // <-- Telnyx Verify routes
 
 const app = express();
 app.set('trust proxy', 1);
@@ -18,6 +19,9 @@ app.use(express.json());
 
 // Stripe payments and SetupIntent endpoints
 app.use('/api', paymentsRouter);
+
+// Telnyx verification endpoints
+app.use('/', verifyRouter); // routes: POST /verify/start, POST /verify/check
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
