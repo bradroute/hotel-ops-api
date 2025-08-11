@@ -2,7 +2,10 @@
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import { createClient } from '@supabase/supabase-js';
+
 import { errorHandler } from './middleware/errorHandler.js';
+import { supabaseUrl, supabaseServiceRoleKey } from './config/index.js';
 
 import requestsRouter from './routes/requests.js';
 import analyticsRouter from './routes/analytics.js';
@@ -10,21 +13,28 @@ import webformRouter from './routes/webform.js';
 import smsRouter from './routes/sms.js';
 import roomsRouter from './routes/rooms.js';
 import paymentsRouter from './routes/payments.js';  // Stripe setup & customer routes
-import guestRouter from './routes/guest.js';        // <-- GPS + property-code auth
+import guestRouter from './routes/guest.js';        // GPS + property-code auth
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
-// Stripe payments and SetupIntent endpoints
+// Make Supabase available to routers (guest.js expects this)
+const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
+app.locals.supabase = supabase;
+
+// Payments (Stripe)
 app.use('/api', paymentsRouter);
 
 // Guest authorization (no OTP)
-app.use('/', guestRouter); // POST /guest/authorize
+// Routes in guest.js are `/ping` and `/start`, so mounting at `/guest` yields:
+//   GET  /guest/ping
+//   POST /guest/start
+app.use('/guest', guestRouter);
 
 // Health check
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Core routes
 app.use('/requests', requestsRouter);
@@ -37,7 +47,7 @@ app.use('/rooms', roomsRouter);
 // SMS webhook with rate limiting
 app.use(
   '/sms',
-  (req, res, next) => {
+  (req, _res, next) => {
     console.log('🔍 /sms payload:', JSON.stringify(req.body, null, 2));
     next();
   },
