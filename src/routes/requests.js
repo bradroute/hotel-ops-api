@@ -1,4 +1,3 @@
-// src/routes/requests.js
 import express from 'express';
 import { supabase, insertRequest } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
@@ -7,18 +6,86 @@ import { classify } from '../services/classifier.js';
 
 const router = express.Router();
 
-// Utility to normalize phone numbers for consistent matching
-function normalizePhone(phone) {
-  return String(phone || '').replace(/\D/g, '');
+function normalizePhone(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+
+// Enabled departments helper (department_settings → hotels.departments_enabled fallback)
+async function getEnabledDepartments(hotel_id) {
+  try {
+    const { data: ds, error: dsErr } = await supabase
+      .from('department_settings')
+      .select('department, enabled')
+      .eq('hotel_id', hotel_id);
+
+    if (!dsErr && ds?.length) {
+      const enabled = ds.filter((r) => r.enabled).map((r) => r.department);
+      if (enabled.length) return enabled;
+    }
+
+    const { data: hotel, error: hErr } = await supabase
+      .from('hotels')
+      .select('departments_enabled')
+      .eq('id', hotel_id)
+      .maybeSingle();
+
+    if (!hErr && Array.isArray(hotel?.departments_enabled)) {
+      return hotel.departments_enabled;
+    }
+  } catch (e) {
+    console.warn('[getEnabledDepartments] fallback due to error:', e?.message || e);
+  }
+  // sensible default
+  return ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet'];
 }
 
 /* ──────────────────────────────────────────────────────────────
+ * Preview classification (uses the SAME classifier as create)
+ * POST /requests/preview { hotel_id|propertyId, message }
+ * ────────────────────────────────────────────────────────────── */
+router.post('/preview', async (req, res) => {
+  try {
+    const { hotel_id: hotelIdBody, propertyId, message } = req.body || {};
+    const hotel_id = hotelIdBody || propertyId;
+    if (!hotel_id || !message) {
+      return res
+        .status(400)
+        .json({ error: 'hotel_id/propertyId and message are required.' });
+    }
+
+    const c = await classify(message, hotel_id);
+    let department = c?.department || 'Front Desk';
+    let priority = c?.priority || 'normal';
+
+    // snap dept to enabled list
+    const enabled = await getEnabledDepartments(hotel_id);
+    if (enabled.length && !enabled.includes(department)) {
+      department = enabled[0];
+    }
+    if (!['low', 'normal', 'urgent'].includes(String(priority))) {
+      priority = 'normal';
+    }
+
+    return res.json({
+      department,
+      priority,
+      ai_summary: c?.ai_summary || message,
+      ai_entities: c?.ai_entities || {},
+      confidence: c?.confidence ?? undefined,
+    });
+  } catch (err) {
+    console.error('preview error:', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
  * Create a New Guest Request
- * Accepts either:
+ * Accepts:
  *  - hotel_id or propertyId
  *  - from_phone or phone_number
+ *  - REQUIRED: room_number, message
  *  - optional department/priority (else we classify)
- *  - room_number is REQUIRED
  * ────────────────────────────────────────────────────────────── */
 router.post('/', async (req, res) => {
   try {
@@ -26,9 +93,9 @@ router.post('/', async (req, res) => {
       hotel_id: hotelIdBody,
       propertyId,
       message,
-      phone_number,          // legacy
-      from_phone,            // app
-      room_number,           // REQUIRED
+      phone_number,
+      from_phone,
+      room_number,
       department: deptOverride,
       priority: prioOverride,
       source,
@@ -39,23 +106,20 @@ router.post('/', async (req, res) => {
 
     if (!hotel_id || !message || !phone || !room_number) {
       return res.status(400).json({
-        error: 'Missing required fields (hotel_id/propertyId, message, from_phone/phone_number, room_number).',
+        error:
+          'Missing required fields (hotel_id/propertyId, message, from_phone/phone_number, room_number).',
       });
     }
 
-    // Classify only what we still need
+    // Department/priority via overrides or classifier
     let department = deptOverride || null;
     let priority = prioOverride || null;
-    let finalRoom = room_number;
 
     if (!department || !priority) {
       try {
         const c = await classify(message, hotel_id);
         department = department || c?.department || 'Front Desk';
         priority = priority || c?.priority || 'normal';
-        // we *require* room_number from the app, but if classify extracted one,
-        // keep the explicit room_number provided by the user as the source of truth.
-        if (!finalRoom && c?.room_number) finalRoom = c.room_number;
       } catch (e) {
         console.warn('⚠️ classify() failed, using defaults:', e?.message || e);
         department = department || 'Front Desk';
@@ -63,7 +127,16 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Ensure guest exists or update last_seen
+    // snap to enabled departments
+    const enabled = await getEnabledDepartments(hotel_id);
+    if (enabled.length && !enabled.includes(department)) {
+      department = enabled[0];
+    }
+    if (!['low', 'normal', 'urgent'].includes(String(priority))) {
+      priority = 'normal';
+    }
+
+    // Enrichment (guest VIP)
     const { data: existingGuest } = await supabase
       .from('guests')
       .select('is_vip')
@@ -71,7 +144,7 @@ router.post('/', async (req, res) => {
       .eq('hotel_id', hotel_id)
       .maybeSingle();
 
-    // Ensure staff status
+    // Enrichment (staff)
     const { data: staffData } = await supabase
       .from('authorized_numbers')
       .select('is_staff')
@@ -85,7 +158,7 @@ router.post('/', async (req, res) => {
       message,
       department,
       priority,
-      room_number: finalRoom,                 // required, but we keep variable for clarity
+      room_number: room_number, // required
       is_staff: staffData?.is_staff || false,
       is_vip: existingGuest?.is_vip || false,
       telnyx_id: null,
@@ -101,8 +174,7 @@ router.post('/', async (req, res) => {
 
 /* ──────────────────────────────────────────────────────────────
  * Get Requests (Scoped to hotel_id, optional phone filter)
- * Allows the app to show a guest’s prior requests by phone.
- * Query: ?hotel_id=... [&phone=+16515551234]
+ * /requests?hotel_id=... [&phone=+16515551234]
  * ────────────────────────────────────────────────────────────── */
 router.get('/', async (req, res) => {
   try {
@@ -112,14 +184,12 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
     }
 
-    // Base query
     let q = supabase
       .from('requests')
       .select('*')
       .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
 
-    // Optional narrow by exact phone match (client should send E.164)
     if (phone) {
       q = q.eq('from_phone', String(phone));
     }
@@ -127,24 +197,27 @@ router.get('/', async (req, res) => {
     const { data: requests, error: reqErr } = await q;
     if (reqErr) throw reqErr;
 
-    // Enrichment (VIP flags)
+    // Enrichment
     const { data: guests = [], error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
       .eq('hotel_id', hotel_id);
     if (guestErr) throw guestErr;
 
-    // Enrichment (staff numbers)
     const { data: staff = [], error: staffErr } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff')
       .eq('hotel_id', hotel_id);
     if (staffErr) throw staffErr;
 
-    const guestMap = Object.fromEntries(guests.map(g => [normalizePhone(g.phone_number), g]));
-    const staffMap = Object.fromEntries(staff.filter(s => s.is_staff).map(s => [normalizePhone(s.phone), true]));
+    const guestMap = Object.fromEntries(
+      guests.map((g) => [normalizePhone(g.phone_number), g])
+    );
+    const staffMap = Object.fromEntries(
+      staff.filter((s) => s.is_staff).map((s) => [normalizePhone(s.phone), true])
+    );
 
-    const enriched = requests.map(r => {
+    const enriched = requests.map((r) => {
       const normPhone = normalizePhone(r.from_phone);
       return {
         ...r,
@@ -161,7 +234,7 @@ router.get('/', async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
- * Acknowledge a Request
+ * Acknowledge / Complete
  * ────────────────────────────────────────────────────────────── */
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
@@ -192,9 +265,6 @@ router.post('/:id/acknowledge', async (req, res, next) => {
   }
 });
 
-/* ──────────────────────────────────────────────────────────────
- * Complete a Request
- * ────────────────────────────────────────────────────────────── */
 router.post('/:id/complete', async (req, res, next) => {
   try {
     const { hotel_id } = req.query;
