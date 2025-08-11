@@ -24,15 +24,50 @@ function toE164(v = '') {
 router.get('/ping', (_req, res) => res.json({ pong: true }));
 
 /**
+ * GET /guest/properties/:hotelId/departments
+ * Returns only active departments for a given hotel.
+ */
+router.get('/properties/:hotelId/departments', async (req, res) => {
+  try {
+    const { hotelId } = req.params;
+    const supabaseAdmin = req.app?.locals?.supabaseAdmin;
+
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: 'supabase_not_initialized' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('department_settings')
+      .select('department')
+      .eq('hotel_id', hotelId)
+      .eq('is_active', true);
+
+    if (error) {
+      console.error('[guest] fetch departments error:', error);
+      return res.status(500).json({ error: 'db_error' });
+    }
+
+    const departments = (data || []).map((row) => row.department);
+    return res.json({ departments });
+  } catch (err) {
+    console.error('[guest] /properties/:hotelId/departments error:', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/**
  * POST /guest/start
  * Body: { name?, phone, propertyCode, lat, lng }
- *  - propertyCode must match hotels.guest_code
+ * - propertyCode must match hotels.guest_code
  * Returns:
- *  { authorized: boolean, hotel_id?, distance_m?, radius_m?, expires_at?, reason? }
+ * { authorized: boolean, hotel_id?, distance_m?, radius_m?, expires_at?, reason? }
  */
 router.post('/start', async (req, res) => {
   try {
     const { name, phone, propertyCode, lat, lng } = req.body || {};
+    const supabase = req.app?.locals?.supabase;
+
+    if (!supabase) return res.status(500).json({ error: 'supabase_not_initialized' });
 
     const e164 = toE164(phone);
     if (!e164) return res.status(400).json({ error: 'invalid_phone' });
@@ -40,9 +75,6 @@ router.post('/start', async (req, res) => {
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).json({ error: 'missing_coords' });
     }
-
-    const supabase = req.app?.locals?.supabase;
-    if (!supabase) return res.status(500).json({ error: 'supabase_not_initialized' });
 
     // Lookup by guest_code in hotels
     const { data: hotel, error: hErr } = await supabase
@@ -59,7 +91,7 @@ router.post('/start', async (req, res) => {
       return res.status(404).json({ error: 'hotel_not_found' });
     }
 
-    const radius = DEFAULT_GEOFENCE_METERS; // per-table radius not in schema; use default/env
+    const radius = DEFAULT_GEOFENCE_METERS;
     const distance = distanceMeters(
       { lat, lng },
       { lat: Number(hotel.latitude), lng: Number(hotel.longitude) }
@@ -75,7 +107,7 @@ router.post('/start', async (req, res) => {
       });
     }
 
-    // Authorize phone for 24h (overwrites prior because phone is PK)
+    // Authorize phone for 24h
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     const upsertRow = {
@@ -83,15 +115,13 @@ router.post('/start', async (req, res) => {
       hotel_id: hotel.id,
       is_staff: false,
       expires_at: expiresAt,
-      // room_number: null, // optional
     };
 
     const { error: aErr } = await supabase
       .from('authorized_numbers')
-      .upsert(upsertRow, { onConflict: 'phone' }); // phone is PK in your schema
+      .upsert(upsertRow, { onConflict: 'phone' });
 
     if (aErr) {
-      // Don’t block authorization on bookkeeping failure; just log.
       console.error('[guest/start] authorized_numbers upsert error:', aErr);
     }
 

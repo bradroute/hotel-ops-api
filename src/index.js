@@ -5,7 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { createClient } from '@supabase/supabase-js';
 
 import { errorHandler } from './middleware/errorHandler.js';
-import { supabaseUrl, supabaseServiceRoleKey } from './config/index.js';
+import { supabaseUrl, supabaseKey, supabaseServiceRoleKey } from './config/index.js';
 
 import requestsRouter from './routes/requests.js';
 import analyticsRouter from './routes/analytics.js';
@@ -13,24 +13,27 @@ import webformRouter from './routes/webform.js';
 import smsRouter from './routes/sms.js';
 import roomsRouter from './routes/rooms.js';
 import paymentsRouter from './routes/payments.js';  // Stripe setup & customer routes
-import guestRouter from './routes/guest.js';        // GPS + property-code auth
+import guestRouter from './routes/guest.js';        // GPS + property-code auth (+ depts)
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
-// Make Supabase available to routers (guest.js expects this)
-const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
+// Supabase: expose anon + admin on app.locals for all routers
+const supabase = createClient(supabaseUrl, supabaseKey);                    // public anon key
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);    // service role key
 app.locals.supabase = supabase;
+app.locals.supabaseAdmin = supabaseAdmin;
 
 // Payments (Stripe)
 app.use('/api', paymentsRouter);
 
-// Guest authorization (no OTP)
-// Routes in guest.js are `/ping` and `/start`, so mounting at `/guest` yields:
+// Guest-facing routes
+// Mounted at /guest => 
 //   GET  /guest/ping
 //   POST /guest/start
+//   GET  /guest/properties/:hotelId/departments
 app.use('/guest', guestRouter);
 
 // Health check
