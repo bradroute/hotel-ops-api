@@ -141,7 +141,7 @@ Extract the following from the guest request:
 - summary: 3-6 word actionable summary
 - root_cause: concise phrase (e.g., "HVAC not working")
 - sentiment: positive, neutral, or negative
-- priority: high, normal, or low (based on urgency)
+- priority: urgent, normal, or low (based on urgency)
 - needs_attention: true if management should review, else false
 
 Respond ONLY with JSON in this format:
