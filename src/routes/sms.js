@@ -146,7 +146,7 @@ router.post('/', async (req, res) => {
     // 7) Opt-in confirmation (must match approved text)
     await sendConfirmationSms(
       from_phone,
-      'Operon: Thanks for contacting Operon on behalf of The Crosby Hotel. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. Reply STOP to unsubscribe or HELP for assistance. We will not sell or share your mobile information for promotional or marketing purposes.'
+      'Operon: Thanks for contacting Operon on behalf of The Crosby Hotel. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. We will not sell or share your mobile information for promotional or marketing purposes.'
     );
 
     // 8) Hotel lookup
