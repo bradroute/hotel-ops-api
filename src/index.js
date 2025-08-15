@@ -15,6 +15,10 @@ import roomsRouter from './routes/rooms.js';
 import paymentsRouter from './routes/payments.js';  // Stripe setup & customer routes
 import guestRouter from './routes/guest.js';        // GPS + property-code auth (+ depts)
 
+// ✅ NEW: App account routes (email+password signup/login) and in-app request submit
+import appAuthRouter from './routes/appAuth.js';
+import appRequestsRouter from './routes/appRequests.js';
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
@@ -35,6 +39,20 @@ app.use('/api', paymentsRouter);
 //   POST /guest/start
 //   GET  /guest/properties/:hotelId/departments
 app.use('/guest', guestRouter);
+
+// ✅ NEW: App account routes (global auth; no property/geo required)
+app.use(
+  '/app',
+  rateLimit({ windowMs: 60_000, max: 60, message: 'Too many requests, slow down.' }),
+  appAuthRouter
+);
+
+// ✅ NEW: In-app request submission (requires X-App-Session + passes geofence/property code)
+app.use(
+  '/app',
+  rateLimit({ windowMs: 60_000, max: 120, message: 'Too many requests, slow down.' }),
+  appRequestsRouter
+);
 
 // Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
