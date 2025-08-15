@@ -19,8 +19,8 @@ async function getSession(token) {
 function milesBetween(lat1, lon1, lat2, lon2) {
   const R = 3958.7613;
   const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1),
-    dLon = toRad(lon2 - lon1);
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) *
@@ -117,7 +117,7 @@ router.get('/requests', async (req, res) => {
     const { data, error } = await supabaseAdmin
       .from('requests')
       .select(
-        'id, created_at, message, department, priority, acknowledged, completed'
+        'id, created_at, message, department, priority, acknowledged, completed, cancelled'
       )
       .eq('app_account_id', sess.app_account_id)
       .order('created_at', { ascending: false });
@@ -128,6 +128,88 @@ router.get('/requests', async (req, res) => {
     return res
       .status(500)
       .send(e.message || 'Could not fetch requests');
+  }
+});
+
+/**
+ * PATCH /app/requests/:id
+ * Body:
+ *  - message?  (string)  — can edit only if NOT acknowledged/completed/cancelled
+ *  - priority? (string)  — can edit only if NOT completed/cancelled
+ *  - cancel?   (boolean) — set true to cancel if NOT completed/cancelled
+ *
+ * Requires: X-App-Session header
+ * Notes:
+ *  - Only the owner (by app_account_id) can modify their request.
+ */
+router.patch('/requests/:id', async (req, res) => {
+  try {
+    const token = req.header('X-App-Session');
+    const sess = await getSession(token);
+    if (!sess) return res.status(401).send('Not signed in.');
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).send('Invalid id.');
+
+    // Fetch to verify ownership and current status
+    const { data: row, error: fErr } = await supabaseAdmin
+      .from('requests')
+      .select(
+        'id, app_account_id, acknowledged, completed, cancelled, message, priority'
+      )
+      .eq('id', id)
+      .single();
+
+    if (fErr || !row) return res.status(404).send('Request not found.');
+    if (row.app_account_id !== sess.app_account_id)
+      return res.status(403).send('Forbidden.');
+
+    // Disallow any changes if already completed/cancelled
+    if (row.completed || row.cancelled) {
+      return res.status(400).send('Request can no longer be modified.');
+    }
+
+    const { message, priority, cancel } = req.body || {};
+    const patch = {};
+
+    // Handle cancel first
+    if (cancel === true) {
+      patch.cancelled = true;
+    } else {
+      // Edit rules
+      if (typeof message === 'string') {
+        if (row.acknowledged) {
+          return res
+            .status(400)
+            .send('Message cannot be edited after acknowledgement.');
+        }
+        if (!message.trim())
+          return res.status(400).send('Message cannot be empty.');
+        patch.message = message.trim();
+      }
+      if (typeof priority === 'string') {
+        // Optionally validate allowed priorities here
+        patch.priority = priority.trim();
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).send('No changes provided.');
+    }
+
+    const { data: updated, error: uErr } = await supabaseAdmin
+      .from('requests')
+      .update(patch)
+      .eq('id', id)
+      .select(
+        'id, created_at, message, department, priority, acknowledged, completed, cancelled'
+      )
+      .single();
+    if (uErr) throw uErr;
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).send(e.message || 'Could not update request');
   }
 });
 
