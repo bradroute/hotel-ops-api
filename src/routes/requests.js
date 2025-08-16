@@ -10,6 +10,12 @@ function normalizePhone(v) {
   return String(v || '').replace(/\D/g, '');
 }
 
+function parseBool(val, def = false) {
+  if (val === undefined || val === null) return def;
+  const s = String(val).toLowerCase();
+  return s === 'true' || s === '1' || s === 'yes';
+}
+
 // Enabled departments helper (department_settings → hotels.departments_enabled fallback)
 async function getEnabledDepartments(hotel_id) {
   try {
@@ -173,31 +179,67 @@ router.post('/', async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
- * Get Requests (Scoped to hotel_id, optional phone filter)
+ * Get Requests (Scoped to hotel_id; supports filters)
  * /requests?hotel_id=... [&phone=+16515551234]
+ * Optional:
+ *  - active_only=true|false (default true → hides completed & cancelled)
+ *  - include_cancelled=true|false (used when active_only=false)
+ *  - unacknowledged_only=true|false
+ *  - department, priority
+ *  - sort=newest|oldest (default newest)
  * ────────────────────────────────────────────────────────────── */
 router.get('/', async (req, res) => {
   try {
-    const { hotel_id, phone } = req.query;
+    const {
+      hotel_id,
+      phone,
+      active_only,
+      include_cancelled,
+      unacknowledged_only,
+      department,
+      priority,
+      sort,
+    } = req.query;
 
     if (!hotel_id) {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
     }
 
+    const activeOnly = parseBool(active_only, true);
+    const includeCancelled = parseBool(include_cancelled, false);
+    const unackedOnly = parseBool(unacknowledged_only, false);
+    const sortNewest = (sort ?? 'newest') !== 'oldest';
+
     let q = supabase
       .from('requests')
-      .select('*')
-      .eq('hotel_id', hotel_id)
-      .order('created_at', { ascending: false });
+      .select(
+        'id, created_at, room_number, from_phone, department, priority, message, acknowledged, completed, cancelled, is_staff, is_vip, source'
+      )
+      .eq('hotel_id', hotel_id);
 
-    if (phone) {
-      q = q.eq('from_phone', String(phone));
+    if (phone) q = q.eq('from_phone', String(phone));
+
+    // Default behavior: hide cancelled (and completed) from dashboard
+    if (activeOnly) {
+      q = q.eq('completed', false).eq('cancelled', false);
+    } else if (!includeCancelled) {
+      q = q.eq('cancelled', false);
     }
+
+    if (unackedOnly) q = q.eq('acknowledged', false);
+
+    const dep = String(department ?? '').trim();
+    if (dep && dep !== 'All Departments') q = q.eq('department', dep);
+
+    const pr = String(priority ?? '').trim();
+    if (pr && pr !== 'All Priorities') q = q.eq('priority', pr);
+
+    q = q.order('created_at', { ascending: !sortNewest });
 
     const { data: requests, error: reqErr } = await q;
     if (reqErr) throw reqErr;
 
-    // Enrichment
+    // Enrichment (optional—kept to preserve current UI badges)
     const { data: guests = [], error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
@@ -217,7 +259,7 @@ router.get('/', async (req, res) => {
       staff.filter((s) => s.is_staff).map((s) => [normalizePhone(s.phone), true])
     );
 
-    const enriched = requests.map((r) => {
+    const enriched = (requests || []).map((r) => {
       const normPhone = normalizePhone(r.from_phone);
       return {
         ...r,
@@ -226,10 +268,31 @@ router.get('/', async (req, res) => {
       };
     });
 
-    return res.json(enriched);
+    // Return as { requests } for consistency with other endpoints
+    return res.json({ requests: enriched });
   } catch (err) {
     console.error('🔥 GET /requests failed:', err);
     return res.status(500).json({ error: err.message || 'Unknown server error' });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+ * Get single request by id (used by guest poller)
+ * /requests/:id
+ * ────────────────────────────────────────────────────────────── */
+router.get('/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id.trim(), 10);
+    const { data, error } = await supabase
+      .from('requests')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Not found' });
+    return res.json(data);
+  } catch (err) {
+    next(err);
   }
 });
 
