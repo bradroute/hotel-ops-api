@@ -23,10 +23,14 @@ function milesBetween(lat1, lon1, lat2, lon2) {
   const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) ** 2;
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function normalizePriority(p) {
+  const v = String(p || '').trim().toLowerCase();
+  if (v === 'low' || v === 'high' || v === 'urgent') return v === 'urgent' ? 'high' : v;
+  return 'normal';
 }
 
 /**
@@ -51,9 +55,7 @@ router.post('/request', async (req, res) => {
       department,
     } = req.body || {};
     if (!propertyCode?.trim() || !roomNumber?.trim() || !message?.trim()) {
-      return res
-        .status(400)
-        .send('Property code, room number, and message are required.');
+      return res.status(400).send('Property code, room number, and message are required.');
     }
 
     // Find hotel by code
@@ -62,26 +64,40 @@ router.post('/request', async (req, res) => {
       .select('id,latitude,longitude,is_active')
       .eq('guest_code', propertyCode.trim())
       .single();
-    if (hErr || !hotel || hotel.is_active === false)
-      return res.status(404).send('Hotel not found.');
+    if (hErr || !hotel || hotel.is_active === false) return res.status(404).send('Hotel not found.');
 
     // Geofence (1 mile)
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).send('Location required.');
     }
     const dist = milesBetween(lat, lng, hotel.latitude, hotel.longitude);
-    if (dist > 1.0)
-      return res
-        .status(403)
-        .send('You must be on property to submit a request.');
+    if (dist > 1.0) return res.status(403).send('You must be on property to submit a request.');
+
+    // Normalize department & priority
+    const requestedDept = (department || 'Front Desk').trim();
+    const safePriority = normalizePriority(priority);
+
+    // If the hotel explicitly disabled this department via department_settings, fallback to Front Desk
+    let safeDept = requestedDept;
+    try {
+      const { data: ds } = await supabaseAdmin
+        .from('department_settings')
+        .select('enabled')
+        .eq('hotel_id', hotel.id)
+        .eq('department', requestedDept)
+        .maybeSingle();
+      if (ds && ds.enabled === false) safeDept = 'Front Desk';
+    } catch {
+      // ignore settings lookup errors; use requestedDept
+    }
 
     // Insert request
     const payload = {
       hotel_id: hotel.id,
       room_number: String(roomNumber).trim(),
       message: String(message).trim(),
-      department: department || 'Front Desk',
-      priority: priority || 'normal',
+      department: safeDept,
+      priority: safePriority,
       is_staff: false,
       source: 'app_guest',
       from_phone: '', // optional if you collect phone at signup
@@ -91,15 +107,18 @@ router.post('/request', async (req, res) => {
     const { data: reqRow, error: rErr } = await supabaseAdmin
       .from('requests')
       .insert(payload)
-      .select('id, created_at')
+      .select('id, created_at, department, priority')
       .single();
     if (rErr) throw rErr;
 
-    return res.json({ id: reqRow.id, created_at: reqRow.created_at });
+    return res.json({
+      id: reqRow.id,
+      created_at: reqRow.created_at,
+      department: reqRow.department,
+      priority: reqRow.priority,
+    });
   } catch (e) {
-    return res
-      .status(500)
-      .send(e.message || 'Could not submit request');
+    return res.status(500).send(e.message || 'Could not submit request');
   }
 });
 
@@ -116,18 +135,14 @@ router.get('/requests', async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('requests')
-      .select(
-        'id, created_at, message, department, priority, acknowledged, completed, cancelled'
-      )
+      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled')
       .eq('app_account_id', sess.app_account_id)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
     return res.json({ requests: data || [] });
   } catch (e) {
-    return res
-      .status(500)
-      .send(e.message || 'Could not fetch requests');
+    return res.status(500).send(e.message || 'Could not fetch requests');
   }
 });
 
@@ -154,15 +169,12 @@ router.patch('/requests/:id', async (req, res) => {
     // Fetch to verify ownership and current status
     const { data: row, error: fErr } = await supabaseAdmin
       .from('requests')
-      .select(
-        'id, app_account_id, acknowledged, completed, cancelled, message, priority'
-      )
+      .select('id, app_account_id, acknowledged, completed, cancelled, message, priority')
       .eq('id', id)
       .single();
 
     if (fErr || !row) return res.status(404).send('Request not found.');
-    if (row.app_account_id !== sess.app_account_id)
-      return res.status(403).send('Forbidden.');
+    if (row.app_account_id !== sess.app_account_id) return res.status(403).send('Forbidden.');
 
     // Disallow any changes if already completed/cancelled
     if (row.completed || row.cancelled) {
@@ -176,20 +188,15 @@ router.patch('/requests/:id', async (req, res) => {
     if (cancel === true) {
       patch.cancelled = true;
     } else {
-      // Edit rules
       if (typeof message === 'string') {
         if (row.acknowledged) {
-          return res
-            .status(400)
-            .send('Message cannot be edited after acknowledgement.');
+          return res.status(400).send('Message cannot be edited after acknowledgement.');
         }
-        if (!message.trim())
-          return res.status(400).send('Message cannot be empty.');
+        if (!message.trim()) return res.status(400).send('Message cannot be empty.');
         patch.message = message.trim();
       }
       if (typeof priority === 'string') {
-        // Optionally validate allowed priorities here
-        patch.priority = priority.trim();
+        patch.priority = normalizePriority(priority);
       }
     }
 
@@ -201,9 +208,7 @@ router.patch('/requests/:id', async (req, res) => {
       .from('requests')
       .update(patch)
       .eq('id', id)
-      .select(
-        'id, created_at, message, department, priority, acknowledged, completed, cancelled'
-      )
+      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled')
       .single();
     if (uErr) throw uErr;
 
