@@ -179,97 +179,88 @@ router.post('/', async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
- * Get Requests (Scoped to hotel_id; supports filters)
+ * Get Requests (Scoped to hotel_id, optional phone filter)
  * /requests?hotel_id=... [&phone=+16515551234]
- * Optional:
- *  - active_only=true|false (default true → hides completed & cancelled)
- *  - include_cancelled=true|false (used when active_only=false)
- *  - unacknowledged_only=true|false
- *  - department, priority
- *  - sort=newest|oldest (default newest)
+ * Filters (all optional):
+ *   active_only=true (default)
+ *   include_cancelled=false
+ *   include_completed=false
+ *   unacked_only=false
  * ────────────────────────────────────────────────────────────── */
 router.get('/', async (req, res) => {
   try {
-    const {
-      hotel_id,
-      phone,
-      active_only,
-      include_cancelled,
-      unacknowledged_only,
-      department,
-      priority,
-      sort,
-    } = req.query;
-
+    const { hotel_id, phone } = req.query;
     if (!hotel_id) {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
     }
 
-    const activeOnly = parseBool(active_only, true);
-    const includeCancelled = parseBool(include_cancelled, false);
-    const unackedOnly = parseBool(unacknowledged_only, false);
-    const sortNewest = (sort ?? 'newest') !== 'oldest';
+    // parse booleans robustly
+    const asBool = (v, def) => {
+      if (v === undefined || v === null || v === '') return def;
+      const s = String(v).toLowerCase();
+      if (['1','true','yes','on'].includes(s)) return true;
+      if (['0','false','no','off'].includes(s)) return false;
+      return def;
+    };
 
+    const activeOnly        = asBool(req.query.active_only, true);
+    const includeCancelled  = asBool(req.query.include_cancelled, false);
+    const includeCompleted  = asBool(req.query.include_completed, false);
+    const unackedOnly       = asBool(req.query.unacked_only, false);
+
+    // base query
     let q = supabase
       .from('requests')
-      .select(
-        'id, created_at, room_number, from_phone, department, priority, message, acknowledged, completed, cancelled, is_staff, is_vip, source'
-      )
-      .eq('hotel_id', hotel_id);
+      .select('*')
+      .eq('hotel_id', hotel_id)
+      .order('created_at', { ascending: false });
 
     if (phone) q = q.eq('from_phone', String(phone));
-
-    // Default behavior: hide cancelled (and completed) from dashboard
-    if (activeOnly) {
-      q = q.eq('completed', false).eq('cancelled', false);
-    } else if (!includeCancelled) {
-      q = q.eq('cancelled', false);
-    }
-
-    if (unackedOnly) q = q.eq('acknowledged', false);
-
-    const dep = String(department ?? '').trim();
-    if (dep && dep !== 'All Departments') q = q.eq('department', dep);
-
-    const pr = String(priority ?? '').trim();
-    if (pr && pr !== 'All Priorities') q = q.eq('priority', pr);
-
-    q = q.order('created_at', { ascending: !sortNewest });
 
     const { data: requests, error: reqErr } = await q;
     if (reqErr) throw reqErr;
 
-    // Enrichment (optional—kept to preserve current UI badges)
-    const { data: guests = [], error: guestErr } = await supabase
+    // Enrichment maps
+    const { data: guests = [] } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
       .eq('hotel_id', hotel_id);
-    if (guestErr) throw guestErr;
 
-    const { data: staff = [], error: staffErr } = await supabase
+    const { data: staff = [] } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff')
       .eq('hotel_id', hotel_id);
-    if (staffErr) throw staffErr;
 
-    const guestMap = Object.fromEntries(
-      guests.map((g) => [normalizePhone(g.phone_number), g])
-    );
-    const staffMap = Object.fromEntries(
-      staff.filter((s) => s.is_staff).map((s) => [normalizePhone(s.phone), true])
-    );
+    const norm = (v) => String(v || '').replace(/\D/g, '');
+    const guestMap = Object.fromEntries(guests.map(g => [norm(g.phone_number), g]));
+    const staffMap = Object.fromEntries(staff.filter(s => s.is_staff).map(s => [norm(s.phone), true]));
 
+    // Enrich
     const enriched = (requests || []).map((r) => {
-      const normPhone = normalizePhone(r.from_phone);
+      const key = norm(r.from_phone);
       return {
         ...r,
-        is_vip: r.is_vip || !!guestMap[normPhone]?.is_vip,
-        is_staff: r.is_staff || !!staffMap[normPhone],
+        is_vip:  r.is_vip  || !!guestMap[key]?.is_vip,
+        is_staff:r.is_staff|| !!staffMap[key],
       };
     });
 
-    // Return as { requests } for consistency with other endpoints
-    return res.json({ requests: enriched });
+    // Filtering
+    let filtered = enriched;
+
+    if (activeOnly) {
+      filtered = filtered.filter(r => !r.completed && !r.cancelled);
+    } else {
+      if (!includeCancelled) filtered = filtered.filter(r => !r.cancelled);
+      if (!includeCompleted) filtered = filtered.filter(r => !r.completed);
+    }
+
+    if (unackedOnly) {
+      filtered = filtered.filter(r => !r.acknowledged);
+    }
+
+    // IMPORTANT: return an ARRAY (dashboard expects array)
+    return res.json(filtered);
   } catch (err) {
     console.error('🔥 GET /requests failed:', err);
     return res.status(500).json({ error: err.message || 'Unknown server error' });
