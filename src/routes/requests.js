@@ -3,17 +3,12 @@ import { supabase, insertRequest } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { sendConfirmationSms } from '../services/telnyxService.js';
 import { classify } from '../services/classifier.js';
+import { sendExpoPush } from '../services/pushService.js';
 
 const router = express.Router();
 
 function normalizePhone(v) {
   return String(v || '').replace(/\D/g, '');
-}
-
-function parseBool(val, def = false) {
-  if (val === undefined || val === null) return def;
-  const s = String(val).toLowerCase();
-  return s === 'true' || s === '1' || s === 'yes';
 }
 
 // Enabled departments helper (department_settings → hotels.departments_enabled fallback)
@@ -41,8 +36,44 @@ async function getEnabledDepartments(hotel_id) {
   } catch (e) {
     console.warn('[getEnabledDepartments] fallback due to error:', e?.message || e);
   }
-  // sensible default
   return ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet'];
+}
+
+/** ─────────────────────────────────────────────────────────────
+ * Notify the owning app account via Expo push
+ * updatedRow must include: id, app_account_id, message, department, priority
+ * event: 'ack' | 'complete'
+ * ───────────────────────────────────────────────────────────── */
+async function notifyRequestOwner(updatedRow, event) {
+  try {
+    const appId = updatedRow?.app_account_id;
+    if (!appId) return; // non-app requests
+
+    const { data: toks, error } = await supabase
+      .from('app_push_tokens')
+      .select('expo_token')
+      .eq('app_account_id', appId);
+
+    if (error || !toks?.length) return;
+    const tokens = toks.map((t) => t.expo_token);
+
+    const title =
+      event === 'ack' ? 'Your request is in progress' : 'Your request is complete';
+    const body = updatedRow?.message || 'Thanks for using Operon.';
+
+    await sendExpoPush(tokens, {
+      title,
+      body,
+      data: {
+        request_id: updatedRow.id,
+        department: updatedRow.department,
+        priority: updatedRow.priority,
+        event,
+      },
+    });
+  } catch (err) {
+    console.error('[notifyRequestOwner] failed:', err);
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -86,12 +117,7 @@ router.post('/preview', async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
- * Create a New Guest Request
- * Accepts:
- *  - hotel_id or propertyId
- *  - from_phone or phone_number
- *  - REQUIRED: room_number, message
- *  - optional department/priority (else we classify)
+ * Create a New Guest/Staff Request
  * ────────────────────────────────────────────────────────────── */
 router.post('/', async (req, res) => {
   try {
@@ -180,87 +206,65 @@ router.post('/', async (req, res) => {
 
 /* ──────────────────────────────────────────────────────────────
  * Get Requests (Scoped to hotel_id, optional phone filter)
- * /requests?hotel_id=... [&phone=+16515551234]
- * Filters (all optional):
- *   active_only=true (default)
- *   include_cancelled=false
- *   include_completed=false
- *   unacked_only=false
+ * Default: show_active_only=1 (hides cancelled/completed)
+ * /requests?hotel_id=... [&phone=...][&show_active_only=0]
  * ────────────────────────────────────────────────────────────── */
 router.get('/', async (req, res) => {
   try {
-    const { hotel_id, phone } = req.query;
+    const { hotel_id, phone, show_active_only } = req.query;
+
     if (!hotel_id) {
       return res.status(400).json({ error: 'Missing hotel_id in query.' });
     }
 
-    // parse booleans robustly
-    const asBool = (v, def) => {
-      if (v === undefined || v === null || v === '') return def;
-      const s = String(v).toLowerCase();
-      if (['1','true','yes','on'].includes(s)) return true;
-      if (['0','false','no','off'].includes(s)) return false;
-      return def;
-    };
-
-    const activeOnly        = asBool(req.query.active_only, true);
-    const includeCancelled  = asBool(req.query.include_cancelled, false);
-    const includeCompleted  = asBool(req.query.include_completed, false);
-    const unackedOnly       = asBool(req.query.unacked_only, false);
-
-    // base query
     let q = supabase
       .from('requests')
       .select('*')
       .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
 
-    if (phone) q = q.eq('from_phone', String(phone));
+    // hide cancelled/completed unless caller disables
+    if (String(show_active_only ?? '1') !== '0') {
+      q = q.eq('cancelled', false).eq('completed', false);
+    }
+
+    if (phone) {
+      q = q.eq('from_phone', String(phone));
+    }
 
     const { data: requests, error: reqErr } = await q;
     if (reqErr) throw reqErr;
 
-    // Enrichment maps
-    const { data: guests = [] } = await supabase
+    // Enrichment
+    const { data: guests = [], error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
       .eq('hotel_id', hotel_id);
+    if (guestErr) throw guestErr;
 
-    const { data: staff = [] } = await supabase
+    const { data: staff = [], error: staffErr } = await supabase
       .from('authorized_numbers')
       .select('phone, is_staff')
       .eq('hotel_id', hotel_id);
+    if (staffErr) throw staffErr;
 
-    const norm = (v) => String(v || '').replace(/\D/g, '');
-    const guestMap = Object.fromEntries(guests.map(g => [norm(g.phone_number), g]));
-    const staffMap = Object.fromEntries(staff.filter(s => s.is_staff).map(s => [norm(s.phone), true]));
+    const guestMap = Object.fromEntries(
+      guests.map((g) => [normalizePhone(g.phone_number), g])
+    );
+    const staffMap = Object.fromEntries(
+      staff.filter((s) => s.is_staff).map((s) => [normalizePhone(s.phone), true])
+    );
 
-    // Enrich
-    const enriched = (requests || []).map((r) => {
-      const key = norm(r.from_phone);
+    const enriched = requests.map((r) => {
+      const normPhone = normalizePhone(r.from_phone);
       return {
         ...r,
-        is_vip:  r.is_vip  || !!guestMap[key]?.is_vip,
-        is_staff:r.is_staff|| !!staffMap[key],
+        is_vip: r.is_vip || !!guestMap[normPhone]?.is_vip,
+        is_staff: r.is_staff || !!staffMap[normPhone],
       };
     });
 
-    // Filtering
-    let filtered = enriched;
-
-    if (activeOnly) {
-      filtered = filtered.filter(r => !r.completed && !r.cancelled);
-    } else {
-      if (!includeCancelled) filtered = filtered.filter(r => !r.cancelled);
-      if (!includeCompleted) filtered = filtered.filter(r => !r.completed);
-    }
-
-    if (unackedOnly) {
-      filtered = filtered.filter(r => !r.acknowledged);
-    }
-
-    // IMPORTANT: return an ARRAY (dashboard expects array)
-    return res.json(filtered);
+    return res.json(enriched);
   } catch (err) {
     console.error('🔥 GET /requests failed:', err);
     return res.status(500).json({ error: err.message || 'Unknown server error' });
@@ -268,27 +272,7 @@ router.get('/', async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
- * Get single request by id (used by guest poller)
- * /requests/:id
- * ────────────────────────────────────────────────────────────── */
-router.get('/:id', async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id.trim(), 10);
-    const { data, error } = await supabase
-      .from('requests')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) return res.status(404).json({ error: 'Not found' });
-    return res.json(data);
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ──────────────────────────────────────────────────────────────
- * Acknowledge / Complete
+ * Acknowledge / Complete (with push)
  * ────────────────────────────────────────────────────────────── */
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
@@ -313,6 +297,7 @@ router.post('/:id/acknowledge', async (req, res, next) => {
       console.error('❌ Confirmation SMS failed:', smsErr);
     }
 
+    await notifyRequestOwner(updated, 'ack');
     return res.json({ success: true, updated });
   } catch (err) {
     next(err);
@@ -332,6 +317,7 @@ router.post('/:id/complete', async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
+    await notifyRequestOwner(updated, 'complete');
     return res.json({ success: true, updated });
   } catch (err) {
     next(err);

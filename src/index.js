@@ -12,60 +12,94 @@ import analyticsRouter from './routes/analytics.js';
 import webformRouter from './routes/webform.js';
 import smsRouter from './routes/sms.js';
 import roomsRouter from './routes/rooms.js';
-import paymentsRouter from './routes/payments.js';  // Stripe setup & customer routes
-import guestRouter from './routes/guest.js';        // GPS + property-code auth (+ depts)
+import paymentsRouter from './routes/payments.js';   // Stripe setup & customer routes
+import guestRouter from './routes/guest.js';         // GPS + property-code auth (+ depts)
 
-// ✅ NEW: App account routes (email+password signup/login) and in-app request submit
+// ✅ App account routes (email+password signup/login) and in-app request submit
 import appAuthRouter from './routes/appAuth.js';
 import appRequestsRouter from './routes/appRequests.js';
 
+// ✅ NEW: Push registration for app accounts
+import appPushRouter from './routes/appPush.js';
+
 const app = express();
 app.set('trust proxy', 1);
-app.use(cors());
-app.use(express.json());
 
-// Supabase: expose anon + admin on app.locals for all routers
-const supabase = createClient(supabaseUrl, supabaseKey);                    // public anon key
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);    // service role key
+// Basic CORS (safe defaults; widen if you need specific origins)
+app.use(cors());
+
+// JSON body parser
+app.use(express.json({ limit: '1mb' }));
+
+// Supabase: expose anon + admin on app.locals for any routers that read from it
+const supabase = createClient(supabaseUrl, supabaseKey);                 // public anon key
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey); // service role key
 app.locals.supabase = supabase;
 app.locals.supabaseAdmin = supabaseAdmin;
 
-// Payments (Stripe)
+/* ───────────────────────────
+ * Payments (Stripe)
+ * ─────────────────────────── */
 app.use('/api', paymentsRouter);
 
-// Guest-facing routes
-// Mounted at /guest => 
-//   GET  /guest/ping
-//   POST /guest/start
-//   GET  /guest/properties/:hotelId/departments
+/* ───────────────────────────
+ * Guest-facing routes
+ * /guest/ping
+ * /guest/start
+ * /guest/properties/:hotelId/departments
+ * ─────────────────────────── */
 app.use('/guest', guestRouter);
 
-// ✅ NEW: App account routes (global auth; no property/geo required)
+/* ───────────────────────────
+ * App account routes (global auth; no geo required)
+ * ─────────────────────────── */
 app.use(
   '/app',
   rateLimit({ windowMs: 60_000, max: 60, message: 'Too many requests, slow down.' }),
   appAuthRouter
 );
 
-// ✅ NEW: In-app request submission (requires X-App-Session + passes geofence/property code)
+/* ───────────────────────────
+ * In-app request submission (X-App-Session required)
+ * ─────────────────────────── */
 app.use(
   '/app',
   rateLimit({ windowMs: 60_000, max: 120, message: 'Too many requests, slow down.' }),
   appRequestsRouter
 );
 
-// Health check
+/* ───────────────────────────
+ * NEW: Push token registration
+ * Endpoints:
+ *   POST /app/push/register
+ *   POST /app/push/unregister
+ * ─────────────────────────── */
+app.use(
+  '/app/push',
+  rateLimit({ windowMs: 60_000, max: 120, message: 'Too many requests, slow down.' }),
+  appPushRouter
+);
+
+/* ───────────────────────────
+ * Health check
+ * ─────────────────────────── */
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Core routes
+/* ───────────────────────────
+ * Core routes
+ * ─────────────────────────── */
 app.use('/requests', requestsRouter);
 app.use('/analytics', analyticsRouter);
 app.use('/api/webform', webformRouter);
 
-// Room check-in/check-out
+/* ───────────────────────────
+ * Room check-in/check-out
+ * ─────────────────────────── */
 app.use('/rooms', roomsRouter);
 
-// SMS webhook with rate limiting
+/* ───────────────────────────
+ * SMS webhook (rate limited)
+ * ─────────────────────────── */
 app.use(
   '/sms',
   (req, _res, next) => {
@@ -76,13 +110,15 @@ app.use(
   smsRouter
 );
 
-// 404 handler
+/* ───────────────────────────
+ * 404 + Error handling
+ * ─────────────────────────── */
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
-
-// Global error handler
 app.use(errorHandler);
 
-// Start server
+/* ───────────────────────────
+ * Start server
+ * ─────────────────────────── */
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`✅ Hotel Ops API running on http://localhost:${PORT}`);

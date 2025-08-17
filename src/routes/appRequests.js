@@ -1,4 +1,3 @@
-// src/routes/appRequests.js
 import { Router } from 'express';
 import { supabaseAdmin } from '../services/supabaseService.js';
 
@@ -23,44 +22,47 @@ function milesBetween(lat1, lon1, lat2, lon2) {
   const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-/** Very light rule-based classifier for department/priority */
-function classifyRequest(text = '') {
-  const t = text.toLowerCase();
+/**
+ * POST /app/push/register
+ * Body: { expoToken, platform?, deviceDesc? }
+ * Requires: X-App-Session header
+ */
+router.post('/push/register', async (req, res) => {
+  try {
+    const token = req.header('X-App-Session');
+    const sess = await getSession(token);
+    if (!sess) return res.status(401).send('Not signed in.');
 
-  const housekeeping =
-    /\b(clean|cleaned|cleaning|housekeep|towel|blanket|linens?|sheets?|pillow|trash|turndown|make\s?bed)\b/.test(
-      t
-    );
-  const maintenance =
-    /\b(broken|leak|leaking|flood|ac\b|a\/c|heater|heat|no\s*power|tv\b|wifi|wi-?fi|internet|outlet|toilet|sink|shower|light|bulb|door|window|smoke\s*detector)\b/.test(
-      t
-    );
-  const roomService =
-    /\b(order|food|menu|room\s*service|deliver|breakfast|dinner|coffee|water|bottle|amenities?)\b/.test(
-      t
-    );
-  const valet =
-    /\b(valet|car|vehicle|parking|retrieve)\b/.test(t);
+    const { expoToken, platform, deviceDesc } = req.body || {};
+    if (!expoToken || typeof expoToken !== 'string') {
+      return res.status(400).send('expoToken required');
+    }
 
-  const urgent =
-    /\b(urgent|asap|immediately|right\s*now|emergency|hurry|cannot\s*wait)\b/.test(
-      t
-    );
+    const { error } = await supabaseAdmin
+      .from('app_push_tokens')
+      .upsert(
+        {
+          app_account_id: sess.app_account_id,
+          expo_token: expoToken,
+          platform: platform || null,
+          device_desc: deviceDesc || null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'app_account_id,expo_token' }
+      );
 
-  let department = 'Front Desk';
-  if (housekeeping) department = 'Housekeeping';
-  else if (maintenance) department = 'Maintenance';
-  else if (roomService) department = 'Room Service';
-  else if (valet) department = 'Valet';
-
-  const priority = urgent ? 'urgent' : 'normal';
-
-  return { department, priority };
-}
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).send(e.message || 'Could not register push token');
+  }
+});
 
 /**
  * POST /app/request
@@ -74,8 +76,15 @@ router.post('/request', async (req, res) => {
     const sess = await getSession(token);
     if (!sess) return res.status(401).send('Not signed in.');
 
-    const { propertyCode, roomNumber, message, lat, lng, priority, department } =
-      req.body || {};
+    const {
+      propertyCode,
+      roomNumber,
+      message,
+      lat,
+      lng,
+      priority,
+      department,
+    } = req.body || {};
     if (!propertyCode?.trim() || !roomNumber?.trim() || !message?.trim()) {
       return res
         .status(400)
@@ -101,19 +110,13 @@ router.post('/request', async (req, res) => {
         .status(403)
         .send('You must be on property to submit a request.');
 
-    // Classify (only used if client didn’t explicitly set)
-    const predicted = classifyRequest(String(message));
-
-    const chosenDept = (department?.trim() || predicted.department || 'Front Desk');
-    const chosenPrio = (priority?.trim() || predicted.priority || 'normal');
-
-    // Insert request WITH the chosen department/priority so history shows it
+    // Insert request
     const payload = {
       hotel_id: hotel.id,
       room_number: String(roomNumber).trim(),
       message: String(message).trim(),
-      department: chosenDept,
-      priority: chosenPrio,
+      department: department || 'Front Desk',
+      priority: priority || 'normal',
       is_staff: false,
       source: 'app_guest',
       from_phone: '',
@@ -123,25 +126,28 @@ router.post('/request', async (req, res) => {
     const { data: reqRow, error: rErr } = await supabaseAdmin
       .from('requests')
       .insert(payload)
-      .select('id, created_at')
+      .select('id, created_at, department, priority')
       .single();
     if (rErr) throw rErr;
 
-    // Return what we saved (useful for the app toast)
+    // return id + what will render in-app (dept/priority)
     return res.json({
       id: reqRow.id,
       created_at: reqRow.created_at,
-      department: chosenDept,
-      priority: chosenPrio,
+      department: reqRow.department,
+      priority: reqRow.priority,
     });
   } catch (e) {
-    return res.status(500).send(e.message || 'Could not submit request');
+    return res
+      .status(500)
+      .send(e.message || 'Could not submit request');
   }
 });
 
 /**
  * GET /app/requests
  * Requires: X-App-Session header
+ * Purpose: Fetch request history for the logged-in account
  */
 router.get('/requests', async (req, res) => {
   try {
@@ -160,12 +166,22 @@ router.get('/requests', async (req, res) => {
     if (error) throw error;
     return res.json({ requests: data || [] });
   } catch (e) {
-    return res.status(500).send(e.message || 'Could not fetch requests');
+    return res
+      .status(500)
+      .send(e.message || 'Could not fetch requests');
   }
 });
 
 /**
  * PATCH /app/requests/:id
+ * Body:
+ *  - message?  (string)  — can edit only if NOT acknowledged/completed/cancelled
+ *  - priority? (string)  — can edit only if NOT completed/cancelled
+ *  - cancel?   (boolean) — set true to cancel if NOT completed/cancelled
+ *
+ * Requires: X-App-Session header
+ * Notes:
+ *  - Only the owner (by app_account_id) can modify their request.
  */
 router.patch('/requests/:id', async (req, res) => {
   try {
@@ -176,6 +192,7 @@ router.patch('/requests/:id', async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).send('Invalid id.');
 
+    // Fetch to verify ownership and current status
     const { data: row, error: fErr } = await supabaseAdmin
       .from('requests')
       .select(
@@ -188,6 +205,7 @@ router.patch('/requests/:id', async (req, res) => {
     if (row.app_account_id !== sess.app_account_id)
       return res.status(403).send('Forbidden.');
 
+    // Disallow any changes if already completed/cancelled
     if (row.completed || row.cancelled) {
       return res.status(400).send('Request can no longer be modified.');
     }
@@ -195,9 +213,11 @@ router.patch('/requests/:id', async (req, res) => {
     const { message, priority, cancel } = req.body || {};
     const patch = {};
 
+    // Handle cancel first
     if (cancel === true) {
       patch.cancelled = true;
     } else {
+      // Edit rules
       if (typeof message === 'string') {
         if (row.acknowledged) {
           return res
@@ -207,12 +227,8 @@ router.patch('/requests/:id', async (req, res) => {
         if (!message.trim())
           return res.status(400).send('Message cannot be empty.');
         patch.message = message.trim();
-
-        // Re-run classification when message changes (optional)
-        const again = classifyRequest(patch.message);
-        patch.department = again.department;
-        patch.priority = priority?.trim() || again.priority || row.priority;
-      } else if (typeof priority === 'string') {
+      }
+      if (typeof priority === 'string') {
         patch.priority = priority.trim();
       }
     }
