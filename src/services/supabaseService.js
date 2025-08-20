@@ -32,7 +32,7 @@ export async function insertRequest({
   telnyx_id,
   is_staff,
   is_vip,
-  // ✅ NEW: persist the request source (defaults to app_guest so DB doesn't fall back to 'sms')
+  // ✅ persist the request source (defaults to app_guest so DB doesn't fall back to 'sms')
   source = 'app_guest',
   // optional enrichment passthroughs (kept if you want to override)
   summary,
@@ -51,30 +51,34 @@ export async function insertRequest({
     console.error('❌ AI enrichment failed:', err);
   }
 
-  // Ensure guest exists or update last_seen
-  const { data: existingGuest } = await supabase
-    .from('guests')
-    .select('id')
-    .eq('phone_number', from_phone)
-    .eq('hotel_id', hotel_id)
-    .maybeSingle();
-
-  if (!existingGuest) {
-    await supabase.from('guests').insert({
-      phone_number: from_phone,
-      is_vip: is_vip || false,
-      hotel_id,
-      last_seen: new Date().toISOString()
-    });
-  } else {
-    await supabase
+  // Ensure guest exists or update last_seen (only when we have a phone)
+  if (from_phone) {
+    const { data: existingGuest } = await supabase
       .from('guests')
-      .update({ last_seen: new Date().toISOString() })
-      .eq('id', existingGuest.id);
+      .select('id')
+      .eq('phone_number', from_phone)
+      .eq('hotel_id', hotel_id)
+      .maybeSingle();
+
+    if (!existingGuest) {
+      await supabase.from('guests').insert({
+        phone_number: from_phone,
+        is_vip: !!is_vip,
+        hotel_id,
+        last_seen: new Date().toISOString()
+      });
+    } else {
+      await supabase
+        .from('guests')
+        .update({ last_seen: new Date().toISOString() })
+        .eq('id', existingGuest.id);
+    }
+  } else {
+    console.warn('[insertRequest] from_phone is empty; skipping guest upsert');
   }
 
-  // Ensure staff is inserted (if is_staff is true)
-  if (is_staff) {
+  // Ensure staff number is in authorized_numbers (only when flagged *and* phone present)
+  if (is_staff && from_phone) {
     const { data: existingStaff } = await supabase
       .from('authorized_numbers')
       .select('id')
@@ -94,7 +98,7 @@ export async function insertRequest({
   // Build the payload for the new request
   const payload = {
     hotel_id,
-    from_phone,
+    from_phone: from_phone || null,
     message,
     department,
     // keep caller-provided priority unless enrichment suggests one
@@ -110,9 +114,10 @@ export async function insertRequest({
     summary: summary ?? enrichment.summary ?? null,
     root_cause: root_cause ?? enrichment.root_cause ?? null,
     sentiment: sentiment ?? enrichment.sentiment ?? null,
-    needs_attention: typeof needs_attention === 'boolean'
-      ? needs_attention
-      : (enrichment.needs_attention ?? false),
+    needs_attention:
+      typeof needs_attention === 'boolean'
+        ? needs_attention
+        : (enrichment.needs_attention ?? false),
   };
   console.log('🔽 insertRequest payload:', payload);
 

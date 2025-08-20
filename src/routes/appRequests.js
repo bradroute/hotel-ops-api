@@ -1,6 +1,6 @@
 // api/AppRequests.js
 import { Router } from 'express';
-import { supabaseAdmin } from '../services/supabaseService.js';
+import { supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 
 const router = Router();
 
@@ -91,7 +91,9 @@ async function getEnabledDepartments(hotelId, hotelFallbackArray = []) {
     if (set.size) return set;
   }
   const arr = Array.isArray(hotelFallbackArray) ? hotelFallbackArray : [];
-  return new Set(arr.length ? arr : ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet']);
+  return new Set(
+    arr.length ? arr : ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet']
+  );
 }
 
 /* ---------- routes ---------- */
@@ -146,7 +148,7 @@ router.post('/request', async (req, res) => {
       lng,
       priority: clientPriority,
       department: clientDepartment,
-      from_phone, // <-- NEW: accept phone from client
+      from_phone, // optional phone from the client
     } = req.body || {};
 
     if (!propertyCode?.trim() || !roomNumber?.trim() || !message?.trim()) {
@@ -162,7 +164,7 @@ router.post('/request', async (req, res) => {
     if (hErr || !hotel || hotel.is_active === false)
       return res.status(404).send('Hotel not found.');
 
-    // Geofence (default 1 mile, configurable)
+    // Geofence
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).send('Location required.');
     }
@@ -176,17 +178,15 @@ router.post('/request', async (req, res) => {
 
     // Classification
     const msg = String(message).trim();
-    let department =
+    const department =
       clientDepartment && enabledSet.has(clientDepartment)
         ? clientDepartment
         : inferDepartment(msg, enabledSet);
-    let priority = clientPriority || inferPriority(msg) || 'normal';
+    const priority = clientPriority || inferPriority(msg) || 'normal';
 
     // Determine phone: prefer body, else app account profile
     let phone = '';
-    if (from_phone) {
-      phone = toE164(from_phone);
-    }
+    if (from_phone) phone = toE164(from_phone);
     if (!phone) {
       const { data: acct, error: aErr } = await supabaseAdmin
         .from('app_accounts')
@@ -196,31 +196,25 @@ router.post('/request', async (req, res) => {
       if (!aErr && acct?.phone) phone = toE164(acct.phone);
     }
 
-    // Insert request (now with from_phone)
-    const payload = {
+    // Insert via service so AI enrichment runs (summary/root cause/sentiment/etc.)
+    const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: String(roomNumber).trim(),
       message: msg,
       department,
       priority,
-      is_staff: false,
       source: 'app_guest',
-      from_phone: phone || null, // <-- persists to requests table
-      app_account_id: sess.app_account_id,
-    };
-
-    const { data: reqRow, error: rErr } = await supabaseAdmin
-      .from('requests')
-      .insert(payload)
-      .select('id, created_at, department, priority')
-      .single();
-    if (rErr) throw rErr;
+      from_phone: phone || null,
+      app_account_id: sess.app_account_id, // ok if ignored in service
+      lat,
+      lng,
+    });
 
     return res.json({
-      id: reqRow.id,
-      created_at: reqRow.created_at,
-      department: reqRow.department,
-      priority: reqRow.priority,
+      id: created.id,
+      created_at: created.created_at,
+      department: created.department,
+      priority: created.priority,
     });
   } catch (e) {
     return res.status(500).send(e.message || 'Could not submit request');
@@ -251,7 +245,6 @@ router.get('/requests', async (req, res) => {
 
 /**
  * PATCH /app/requests/:id
- * (unchanged)
  */
 router.patch('/requests/:id', async (req, res) => {
   try {
