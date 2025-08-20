@@ -4,6 +4,9 @@ import { supabaseAdmin } from '../services/supabaseService.js';
 
 const router = Router();
 
+/* ---------- config ---------- */
+const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
+
 /* ---------- session helpers ---------- */
 async function getSession(token) {
   if (!token) return null;
@@ -15,6 +18,13 @@ async function getSession(token) {
   if (error || !data) return null;
   if (new Date(data.expires_at) < new Date()) return null;
   return data;
+}
+
+/* ---------- utils ---------- */
+function toE164(v = '') {
+  const d = String(v).replace(/\D/g, '');
+  if (!d) return '';
+  return d.startsWith('1') ? `+${d}` : `+1${d}`;
 }
 
 /* ---------- geo helpers ---------- */
@@ -30,8 +40,6 @@ function milesBetween(lat1, lon1, lat2, lon2) {
 }
 
 /* ---------- classification helpers ---------- */
-
-/** Keyword map (add/remove freely). Keys must match department names you store. */
 const DEPT_KEYWORDS = {
   Valet: [
     /\b(valet|car|vehicle|garage|parking|retrieve|pick.*car|bring.*car|get.*car|my.*car)\b/i,
@@ -57,7 +65,6 @@ const DEPT_KEYWORDS = {
   ],
 };
 
-/** Priority from text (only set when clear) */
 function inferPriority(msg) {
   const t = (msg || '').toLowerCase();
   if (/\b(urgent|asap|immediately|right now|emergency)\b/.test(t)) return 'urgent';
@@ -65,20 +72,15 @@ function inferPriority(msg) {
   return 'normal';
 }
 
-/** Choose first enabled department whose regex matches; fallback Front Desk */
 function inferDepartment(msg, enabledSet) {
-  // Try exact keyword matches in a stable order
   for (const [dept, patterns] of Object.entries(DEPT_KEYWORDS)) {
     if (!enabledSet.has(dept)) continue;
     if (patterns.some((re) => re.test(msg))) return dept;
   }
-  // Fallback when nothing matched or department not enabled
   return enabledSet.has('Front Desk') ? 'Front Desk' : [...enabledSet][0] || 'Front Desk';
 }
 
-/** Return enabled departments for a hotel as a Set<string> */
 async function getEnabledDepartments(hotelId, hotelFallbackArray = []) {
-  // Newer per-department settings table (preferred)
   const { data: rows, error } = await supabaseAdmin
     .from('department_settings')
     .select('department, enabled')
@@ -88,15 +90,12 @@ async function getEnabledDepartments(hotelId, hotelFallbackArray = []) {
     const set = new Set(rows.filter((r) => r.enabled).map((r) => r.department));
     if (set.size) return set;
   }
-
-  // Fallback to hotels.departments_enabled ARRAY
   const arr = Array.isArray(hotelFallbackArray) ? hotelFallbackArray : [];
   return new Set(arr.length ? arr : ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet']);
 }
 
 /* ---------- routes ---------- */
 
-/** Register push tokens (unchanged) */
 router.post('/push/register', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
@@ -130,9 +129,8 @@ router.post('/push/register', async (req, res) => {
 
 /**
  * POST /app/request
- * Body: { propertyCode, roomNumber, message, lat, lng, priority?, department? }
+ * Body: { propertyCode, roomNumber, message, lat, lng, priority?, department?, from_phone? }
  * Requires: X-App-Session header
- * Purpose: Submit a new request (geo-fenced to ~1 mile) with server-side classification.
  */
 router.post('/request', async (req, res) => {
   try {
@@ -148,12 +146,14 @@ router.post('/request', async (req, res) => {
       lng,
       priority: clientPriority,
       department: clientDepartment,
+      from_phone, // <-- NEW: accept phone from client
     } = req.body || {};
+
     if (!propertyCode?.trim() || !roomNumber?.trim() || !message?.trim()) {
       return res.status(400).send('Property code, room number, and message are required.');
     }
 
-    // Find hotel by code (also fetch departments_enabled fallback)
+    // Find hotel by code
     const { data: hotel, error: hErr } = await supabaseAdmin
       .from('hotels')
       .select('id, latitude, longitude, is_active, departments_enabled')
@@ -162,22 +162,41 @@ router.post('/request', async (req, res) => {
     if (hErr || !hotel || hotel.is_active === false)
       return res.status(404).send('Hotel not found.');
 
-    // Geofence (1 mile)
+    // Geofence (default 1 mile, configurable)
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).send('Location required.');
     }
     const dist = milesBetween(lat, lng, hotel.latitude, hotel.longitude);
-    if (dist > 1.0) return res.status(403).send('You must be on property to submit a request.');
+    if (dist > DEFAULT_GEOFENCE_MILES) {
+      return res.status(403).send('You must be on property to submit a request.');
+    }
 
-    // Enabled departments for this hotel
+    // Enabled departments
     const enabledSet = await getEnabledDepartments(hotel.id, hotel.departments_enabled);
 
-    // Classification (if client didn’t force a value, or forced one that’s not enabled)
+    // Classification
     const msg = String(message).trim();
-    let department = clientDepartment && enabledSet.has(clientDepartment) ? clientDepartment : inferDepartment(msg, enabledSet);
+    let department =
+      clientDepartment && enabledSet.has(clientDepartment)
+        ? clientDepartment
+        : inferDepartment(msg, enabledSet);
     let priority = clientPriority || inferPriority(msg) || 'normal';
 
-    // Insert request
+    // Determine phone: prefer body, else app account profile
+    let phone = '';
+    if (from_phone) {
+      phone = toE164(from_phone);
+    }
+    if (!phone) {
+      const { data: acct, error: aErr } = await supabaseAdmin
+        .from('app_accounts')
+        .select('phone')
+        .eq('id', sess.app_account_id)
+        .single();
+      if (!aErr && acct?.phone) phone = toE164(acct.phone);
+    }
+
+    // Insert request (now with from_phone)
     const payload = {
       hotel_id: hotel.id,
       room_number: String(roomNumber).trim(),
@@ -186,7 +205,7 @@ router.post('/request', async (req, res) => {
       priority,
       is_staff: false,
       source: 'app_guest',
-      from_phone: '',
+      from_phone: phone || null, // <-- persists to requests table
       app_account_id: sess.app_account_id,
     };
 
@@ -197,7 +216,6 @@ router.post('/request', async (req, res) => {
       .single();
     if (rErr) throw rErr;
 
-    // return id + what will render in-app (dept/priority)
     return res.json({
       id: reqRow.id,
       created_at: reqRow.created_at,
