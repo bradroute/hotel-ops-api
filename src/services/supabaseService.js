@@ -32,9 +32,8 @@ export async function insertRequest({
   telnyx_id,
   is_staff,
   is_vip,
-  // ✅ persist the request source (defaults to app_guest so DB doesn't fall back to 'sms')
+  app_account_id,
   source = 'app_guest',
-  // optional enrichment passthroughs (kept if you want to override)
   summary,
   root_cause,
   sentiment,
@@ -101,16 +100,14 @@ export async function insertRequest({
     from_phone: from_phone || null,
     message,
     department,
-    // keep caller-provided priority unless enrichment suggests one
     priority: enrichment.priority || priority || 'normal',
     room_number,
     telnyx_id: telnyx_id ?? null,
     estimated_revenue,
     is_staff: !!is_staff,
     is_vip: !!is_vip,
-    // ✅ ensure 'source' is stored (enum: 'sms' | 'app_guest' | 'app_staff')
+    app_account_id: app_account_id || null,
     source: source || 'app_guest',
-    // AI enrichment (caller-provided fields win if passed)
     summary: summary ?? enrichment.summary ?? null,
     root_cause: root_cause ?? enrichment.root_cause ?? null,
     sentiment: sentiment ?? enrichment.sentiment ?? null,

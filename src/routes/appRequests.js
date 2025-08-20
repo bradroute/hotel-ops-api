@@ -40,9 +40,15 @@ function milesBetween(lat1, lon1, lat2, lon2) {
 }
 
 /* ---------- classification helpers ---------- */
+// Extra context: bellhop terms + “carry/deliver/bring/take/haul” verbs
+const BELLHOP_CONTEXT = /(?=.*\b(bag|bags|luggage|suitcase|suitcases)\b)(?=.*\b(carry|carried|deliver|bring|brought|take|haul|porter)\b)/i;
+
+/** Keyword map (all patterns use sane word boundaries). */
 const DEPT_KEYWORDS = {
   Valet: [
-    /\b(valet|car|vehicle|garage|parking|retrieve|pick.*car|bring.*car|get.*car|my.*car)\b/i,
+    // NOTE: \bcar\b prevents matching "carried"
+    /\b(valet|garage|parking|retrieve|get(?:ting)?\s+my\s+car|bring(?:ing)?\s+my\s+car|pick(?:ing)?\s+up\s+my\s+car)\b/i,
+    /\b(car|vehicle)\b/i,
   ],
   Housekeeping: [
     /\b(towel|towels|pillow|pillows|blanket|blankets|sheet|sheets|linen|clean|cleanup|trash|housekeeping)\b/i,
@@ -52,7 +58,10 @@ const DEPT_KEYWORDS = {
   ],
   'Room Service': [/\b(room ?service|food|order|menu|breakfast|dinner|lunch|coffee)\b/i],
   Concierge: [/\b(concierge|reservation|tickets?|recommend|tour|restaurant)\b/i],
-  Bellhop: [/\b(bell\s?(hop|man)|porter|luggage|bags?)\b/i],
+  Bellhop: [
+    /\b(bell\s?(hop|man)|porter|luggage|bags?)\b/i,
+    BELLHOP_CONTEXT, // luggage + carry/deliver/etc.
+  ],
   Laundry: [/\b(laundry|dry\s?clean|wash|press)\b/i],
   Security: [/\b(security|noise\scomplaint|disturbance|lost|stolen)\b/i],
   IT: [/\b(wifi|wi-?fi|internet|login|password)\b/i],
@@ -61,9 +70,27 @@ const DEPT_KEYWORDS = {
   Pool: [/\b(pool|pool\s?towel)\b/i],
   Gym: [/\b(gym|fitness|treadmill|weights?)\b/i],
   'Front Desk': [
-    /\b(front\sdesk|wake\s?call|late\s?check(out)?|key\s?card|check-?in|check-?out)\b/i,
+    /\b(front\sdesk|wake\s?call|late\s?check(?:out)?|key\s?card|check-?in|check-?out)\b/i,
   ],
 };
+
+// Preferred tiebreak order when scores are equal
+const PRIORITY_DEPT_ORDER = [
+  'Bellhop',
+  'Valet',
+  'Housekeeping',
+  'Maintenance',
+  'Room Service',
+  'Front Desk',
+  'Concierge',
+  'Laundry',
+  'Security',
+  'IT',
+  'Shuttle',
+  'Spa',
+  'Pool',
+  'Gym',
+];
 
 function inferPriority(msg) {
   const t = (msg || '').toLowerCase();
@@ -72,14 +99,47 @@ function inferPriority(msg) {
   return 'normal';
 }
 
+/**
+ * Score-based department inference using enabled departments only.
+ * - Counts regex matches per department
+ * - Breaks ties with domain-specific rules (Bellhop vs Valet)
+ * - Falls back to Front Desk (or first enabled)
+ */
 function inferDepartment(msg, enabledSet) {
+  const text = String(msg || '');
+  const scores = new Map();
+
   for (const [dept, patterns] of Object.entries(DEPT_KEYWORDS)) {
     if (!enabledSet.has(dept)) continue;
-    if (patterns.some((re) => re.test(msg))) return dept;
+    const score = patterns.reduce((acc, re) => (re.test(text) ? acc + 1 : acc), 0);
+    if (score > 0) scores.set(dept, score);
   }
-  return enabledSet.has('Front Desk') ? 'Front Desk' : [...enabledSet][0] || 'Front Desk';
+
+  if (scores.size === 0) {
+    return enabledSet.has('Front Desk') ? 'Front Desk' : [...enabledSet][0] || 'Front Desk';
+  }
+
+  // Find max score and candidates
+  let max = 0;
+  for (const s of scores.values()) max = Math.max(max, s);
+  const candidates = [...scores.entries()].filter(([, s]) => s === max).map(([d]) => d);
+
+  // Domain tie-breakers
+  if (candidates.includes('Bellhop') && candidates.includes('Valet')) {
+    if (BELLHOP_CONTEXT.test(text) || /\b(bags?|luggage|porter)\b/i.test(text)) return 'Bellhop';
+    if (/\b(car|vehicle|parking|garage)\b/i.test(text)) return 'Valet';
+  }
+
+  // Generic tie-breaker by priority order
+  for (const d of PRIORITY_DEPT_ORDER) {
+    if (candidates.includes(d)) return d;
+  }
+
+  // Fallback (shouldn't hit)
+  return candidates[0] || (enabledSet.has('Front Desk') ? 'Front Desk' : [...enabledSet][0]);
 }
 
+/** Return enabled departments for a hotel as a Set<string> */
 async function getEnabledDepartments(hotelId, hotelFallbackArray = []) {
   const { data: rows, error } = await supabaseAdmin
     .from('department_settings')
@@ -91,9 +151,7 @@ async function getEnabledDepartments(hotelId, hotelFallbackArray = []) {
     if (set.size) return set;
   }
   const arr = Array.isArray(hotelFallbackArray) ? hotelFallbackArray : [];
-  return new Set(
-    arr.length ? arr : ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet']
-  );
+  return new Set(arr.length ? arr : ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet']);
 }
 
 /* ---------- routes ---------- */
@@ -147,7 +205,7 @@ router.post('/request', async (req, res) => {
       lat,
       lng,
       priority: clientPriority,
-      department: clientDepartment,
+      /* department: clientDepartment,  // ignored — server always infers */
       from_phone, // optional phone from the client
     } = req.body || {};
 
@@ -176,12 +234,9 @@ router.post('/request', async (req, res) => {
     // Enabled departments
     const enabledSet = await getEnabledDepartments(hotel.id, hotel.departments_enabled);
 
-    // Classification
+    // Classification — ALWAYS infer on server
     const msg = String(message).trim();
-    const department =
-      clientDepartment && enabledSet.has(clientDepartment)
-        ? clientDepartment
-        : inferDepartment(msg, enabledSet);
+    const department = inferDepartment(msg, enabledSet);
     const priority = clientPriority || inferPriority(msg) || 'normal';
 
     // Determine phone: prefer body, else app account profile
@@ -196,7 +251,7 @@ router.post('/request', async (req, res) => {
       if (!aErr && acct?.phone) phone = toE164(acct.phone);
     }
 
-    // Insert via service so AI enrichment runs (summary/root cause/sentiment/etc.)
+    // Insert via service so AI enrichment runs
     const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: String(roomNumber).trim(),
@@ -205,7 +260,7 @@ router.post('/request', async (req, res) => {
       priority,
       source: 'app_guest',
       from_phone: phone || null,
-      app_account_id: sess.app_account_id, // ok if ignored in service
+      app_account_id: sess.app_account_id,
       lat,
       lng,
     });
