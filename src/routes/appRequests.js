@@ -3,8 +3,6 @@ import { Router } from 'express';
 import { supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 
 const router = Router();
-
-/* ---------- config ---------- */
 const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
 
 /* ---------- session helpers ---------- */
@@ -27,7 +25,7 @@ function toE164(v = '') {
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 }
 
-/* ---------- geo helpers ---------- */
+/* ---------- geo ---------- */
 function milesBetween(lat1, lon1, lat2, lon2) {
   const R = 3958.7613;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -39,123 +37,9 @@ function milesBetween(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-/* ---------- classification helpers ---------- */
-// Extra context: bellhop terms + “carry/deliver/bring/take/haul” verbs
-const BELLHOP_CONTEXT = /(?=.*\b(bag|bags|luggage|suitcase|suitcases)\b)(?=.*\b(carry|carried|deliver|bring|brought|take|haul|porter)\b)/i;
-
-/** Keyword map (all patterns use sane word boundaries). */
-const DEPT_KEYWORDS = {
-  Valet: [
-    // NOTE: \bcar\b prevents matching "carried"
-    /\b(valet|garage|parking|retrieve|get(?:ting)?\s+my\s+car|bring(?:ing)?\s+my\s+car|pick(?:ing)?\s+up\s+my\s+car)\b/i,
-    /\b(car|vehicle)\b/i,
-  ],
-  Housekeeping: [
-    /\b(towel|towels|pillow|pillows|blanket|blankets|sheet|sheets|linen|clean|cleanup|trash|housekeeping)\b/i,
-  ],
-  Maintenance: [
-    /\b(fix|repair|broken|leak|clog|toilet|sink|plunge|ac|a\/c|air.?conditioning|heater|tv(?!\s?guide)|light(s)?\s(out)?)\b/i,
-  ],
-  'Room Service': [/\b(room ?service|food|order|menu|breakfast|dinner|lunch|coffee)\b/i],
-  Concierge: [/\b(concierge|reservation|tickets?|recommend|tour|restaurant)\b/i],
-  Bellhop: [
-    /\b(bell\s?(hop|man)|porter|luggage|bags?)\b/i,
-    BELLHOP_CONTEXT, // luggage + carry/deliver/etc.
-  ],
-  Laundry: [/\b(laundry|dry\s?clean|wash|press)\b/i],
-  Security: [/\b(security|noise\scomplaint|disturbance|lost|stolen)\b/i],
-  IT: [/\b(wifi|wi-?fi|internet|login|password)\b/i],
-  Shuttle: [/\b(shuttle|airport|ride|transport)\b/i],
-  Spa: [/\b(spa|massage|appointment)\b/i],
-  Pool: [/\b(pool|pool\s?towel)\b/i],
-  Gym: [/\b(gym|fitness|treadmill|weights?)\b/i],
-  'Front Desk': [
-    /\b(front\sdesk|wake\s?call|late\s?check(?:out)?|key\s?card|check-?in|check-?out)\b/i,
-  ],
-};
-
-// Preferred tiebreak order when scores are equal
-const PRIORITY_DEPT_ORDER = [
-  'Bellhop',
-  'Valet',
-  'Housekeeping',
-  'Maintenance',
-  'Room Service',
-  'Front Desk',
-  'Concierge',
-  'Laundry',
-  'Security',
-  'IT',
-  'Shuttle',
-  'Spa',
-  'Pool',
-  'Gym',
-];
-
-function inferPriority(msg) {
-  const t = (msg || '').toLowerCase();
-  if (/\b(urgent|asap|immediately|right now|emergency)\b/.test(t)) return 'urgent';
-  if (/\b(no rush|whenever|not urgent|low priority)\b/.test(t)) return 'low';
-  return 'normal';
-}
-
-/**
- * Score-based department inference using enabled departments only.
- * - Counts regex matches per department
- * - Breaks ties with domain-specific rules (Bellhop vs Valet)
- * - Falls back to Front Desk (or first enabled)
- */
-function inferDepartment(msg, enabledSet) {
-  const text = String(msg || '');
-  const scores = new Map();
-
-  for (const [dept, patterns] of Object.entries(DEPT_KEYWORDS)) {
-    if (!enabledSet.has(dept)) continue;
-    const score = patterns.reduce((acc, re) => (re.test(text) ? acc + 1 : acc), 0);
-    if (score > 0) scores.set(dept, score);
-  }
-
-  if (scores.size === 0) {
-    return enabledSet.has('Front Desk') ? 'Front Desk' : [...enabledSet][0] || 'Front Desk';
-  }
-
-  // Find max score and candidates
-  let max = 0;
-  for (const s of scores.values()) max = Math.max(max, s);
-  const candidates = [...scores.entries()].filter(([, s]) => s === max).map(([d]) => d);
-
-  // Domain tie-breakers
-  if (candidates.includes('Bellhop') && candidates.includes('Valet')) {
-    if (BELLHOP_CONTEXT.test(text) || /\b(bags?|luggage|porter)\b/i.test(text)) return 'Bellhop';
-    if (/\b(car|vehicle|parking|garage)\b/i.test(text)) return 'Valet';
-  }
-
-  // Generic tie-breaker by priority order
-  for (const d of PRIORITY_DEPT_ORDER) {
-    if (candidates.includes(d)) return d;
-  }
-
-  // Fallback (shouldn't hit)
-  return candidates[0] || (enabledSet.has('Front Desk') ? 'Front Desk' : [...enabledSet][0]);
-}
-
-/** Return enabled departments for a hotel as a Set<string> */
-async function getEnabledDepartments(hotelId, hotelFallbackArray = []) {
-  const { data: rows, error } = await supabaseAdmin
-    .from('department_settings')
-    .select('department, enabled')
-    .eq('hotel_id', hotelId);
-
-  if (!error && rows && rows.length) {
-    const set = new Set(rows.filter((r) => r.enabled).map((r) => r.department));
-    if (set.size) return set;
-  }
-  const arr = Array.isArray(hotelFallbackArray) ? hotelFallbackArray : [];
-  return new Set(arr.length ? arr : ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet']);
-}
-
 /* ---------- routes ---------- */
 
+// Push register unchanged
 router.post('/push/register', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
@@ -189,8 +73,9 @@ router.post('/push/register', async (req, res) => {
 
 /**
  * POST /app/request
- * Body: { propertyCode, roomNumber, message, lat, lng, priority?, department?, from_phone? }
+ * Body: { propertyCode, roomNumber, message, lat, lng, from_phone? }
  * Requires: X-App-Session header
+ * Note: Department & priority come from AI in insertRequest().
  */
 router.post('/request', async (req, res) => {
   try {
@@ -198,17 +83,7 @@ router.post('/request', async (req, res) => {
     const sess = await getSession(token);
     if (!sess) return res.status(401).send('Not signed in.');
 
-    const {
-      propertyCode,
-      roomNumber,
-      message,
-      lat,
-      lng,
-      priority: clientPriority,
-      /* department: clientDepartment,  // ignored — server always infers */
-      from_phone, // optional phone from the client
-    } = req.body || {};
-
+    const { propertyCode, roomNumber, message, lat, lng, from_phone } = req.body || {};
     if (!propertyCode?.trim() || !roomNumber?.trim() || !message?.trim()) {
       return res.status(400).send('Property code, room number, and message are required.');
     }
@@ -216,11 +91,12 @@ router.post('/request', async (req, res) => {
     // Find hotel by code
     const { data: hotel, error: hErr } = await supabaseAdmin
       .from('hotels')
-      .select('id, latitude, longitude, is_active, departments_enabled')
+      .select('id, latitude, longitude, is_active')
       .eq('guest_code', propertyCode.trim())
       .single();
-    if (hErr || !hotel || hotel.is_active === false)
+    if (hErr || !hotel || hotel.is_active === false) {
       return res.status(404).send('Hotel not found.');
+    }
 
     // Geofence
     if (typeof lat !== 'number' || typeof lng !== 'number') {
@@ -231,33 +107,25 @@ router.post('/request', async (req, res) => {
       return res.status(403).send('You must be on property to submit a request.');
     }
 
-    // Enabled departments
-    const enabledSet = await getEnabledDepartments(hotel.id, hotel.departments_enabled);
-
-    // Classification — ALWAYS infer on server
-    const msg = String(message).trim();
-    const department = inferDepartment(msg, enabledSet);
-    const priority = clientPriority || inferPriority(msg) || 'normal';
-
-    // Determine phone: prefer body, else app account profile
+    // Determine phone: prefer body, else profile
     let phone = '';
     if (from_phone) phone = toE164(from_phone);
     if (!phone) {
-      const { data: acct, error: aErr } = await supabaseAdmin
+      const { data: acct } = await supabaseAdmin
         .from('app_accounts')
         .select('phone')
         .eq('id', sess.app_account_id)
         .single();
-      if (!aErr && acct?.phone) phone = toE164(acct.phone);
+      if (acct?.phone) phone = toE164(acct.phone);
     }
 
-    // Insert via service so AI enrichment runs
+    // Let the service (AI) set department & priority
     const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: String(roomNumber).trim(),
-      message: msg,
-      department,
-      priority,
+      message: String(message).trim().slice(0, 240),
+      department: null,            // AI fills
+      priority: null,              // AI fills
       source: 'app_guest',
       from_phone: phone || null,
       app_account_id: sess.app_account_id,
@@ -276,9 +144,7 @@ router.post('/request', async (req, res) => {
   }
 });
 
-/**
- * GET /app/requests
- */
+/** GET /app/requests (unchanged) */
 router.get('/requests', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
@@ -298,9 +164,7 @@ router.get('/requests', async (req, res) => {
   }
 });
 
-/**
- * PATCH /app/requests/:id
- */
+/** PATCH /app/requests/:id (unchanged) */
 router.patch('/requests/:id', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
