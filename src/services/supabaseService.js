@@ -1,4 +1,4 @@
-// src/services/supabaseService.js — merged full file (Aug 21, 2025)
+// src/services/supabaseService.js — fully updated (classifier-safe) — Aug 21, 2025
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -31,7 +31,7 @@ const toE164 = (v) => {
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 };
 
-/* small date utils used in a few analytics helpers */
+// shift a UTC ISO string into a local Date object using a numeric tz offset (minutes)
 const shiftToLocal = (iso, tzOffsetMinutes = -300) => {
   const utcMs = new Date(iso).getTime();
   return new Date(utcMs + tzOffsetMinutes * 60 * 1000);
@@ -58,7 +58,7 @@ export async function insertRequest({
   root_cause,
   sentiment,
   needs_attention,
-  app_account_id, // NEW: persist the app account that created the request
+  app_account_id, // persist the app account that created the request
   lat,
   lng,
 }) {
@@ -73,7 +73,6 @@ export async function insertRequest({
     aiDept = cls?.department || null;
     aiPrio = cls?.priority || null;
     aiRoom = cls?.room_number || null;
-    // console.log('🧭 classify():', cls);
   } catch (err) {
     console.error('❌ classify() failed:', err);
   }
@@ -82,7 +81,6 @@ export async function insertRequest({
   let enrichment = {};
   try {
     enrichment = await enrichRequest(message);
-    // console.log('🧠 enrichRequest():', enrichment);
   } catch (err) {
     console.error('❌ enrichRequest() failed:', err);
   }
@@ -163,7 +161,6 @@ export async function insertRequest({
     lat: typeof lat === 'number' ? lat : null,
     lng: typeof lng === 'number' ? lng : null,
   };
-  // console.log('🔽 insertRequest payload:', payload);
 
   const { data, error } = await supabase
     .from('requests')
@@ -175,12 +172,11 @@ export async function insertRequest({
     console.error('❌ Supabase “requests” INSERT error:', error);
     throw new Error(error.message);
   }
-  // console.log('✅ Supabase “requests” INSERT succeeded:', data);
   return data;
 }
 
 /** ──────────────────────────────────────────────────────────────
- * ANALYTICS CORE FUNCTIONS (PHASE 1 + 2)
+ * ANALYTICS CORE FUNCTIONS (aligned with /analytics/full)
  */
 export async function getTotalRequests(startDate, endDate, hotelId) {
   const { count, error } = await supabase
@@ -222,7 +218,7 @@ export async function getMissedSLACount(startDate, endDate, hotelId) {
   ).length;
 }
 
-// REPLACEMENT for the "Requests per Day" chart → Requests by Hour (0–23)
+// Replacement for per-day chart → Requests by Hour (0–23)
 export async function getRequestsByHour(startDate, endDate, hotelId, tzOffsetMinutes = -300) {
   const { data, error } = await supabase
     .from('requests')
@@ -238,7 +234,7 @@ export async function getRequestsByHour(startDate, endDate, hotelId, tzOffsetMin
     const hourLocal = local.getUTCHours(); // after shifting, UTC hours == local hours
     buckets[hourLocal].count++;
   }
-  return buckets; // [{ hour: 0..23, count }]
+  return buckets;
 }
 
 export async function getTopDepartments(startDate, endDate, hotelId) {
@@ -260,8 +256,7 @@ export async function getTopDepartments(startDate, endDate, hotelId) {
     .map(([name, value]) => ({ name, value }));
 }
 
-// TIGHTENED Common Request Words
-// Usage: getCommonRequestWords(start, end, hotelId, { topN: 5, minLen: 3, minCount: 2 })
+// Tightened common request words (normalization + stoplist + frequency floor)
 export async function getCommonRequestWords(startDate, endDate, hotelId, options = {}) {
   const { topN = 5, minLen = 3, minCount = 2 } = options;
 
@@ -280,7 +275,6 @@ export async function getCommonRequestWords(startDate, endDate, hotelId, options
     'room', 'suite', 'number', 'door', 'key', 'keys', 'card', 'cards', 'service', 'front', 'desk', 'guest', 'hotel',
   ]);
 
-  // Normalizer: lowercase, collapse wifi variants, strip non‑letters, naive singularization
   const normalize = (w) => {
     if (!w) return '';
     let s = w.toLowerCase();
@@ -348,15 +342,13 @@ export async function getEstimatedRevenue(startDate, endDate, hotelId) {
   return data.reduce((sum, r) => sum + (r.estimated_revenue || 0), 0);
 }
 
-// ------------- UPDATED LABOR TIME SAVED ANALYTICS BELOW -------------
+// Labor time saved (minutes) — conservative default model
 export async function getLaborTimeSaved(startDate, endDate, hotelId) {
   const total = await getTotalRequests(startDate, endDate, hotelId);
-  const MINUTES_SAVED_PER_REQUEST = 4; // conservative default
+  const MINUTES_SAVED_PER_REQUEST = 4;
   return total * MINUTES_SAVED_PER_REQUEST;
 }
-
 export const getEnhancedLaborTimeSaved = getLaborTimeSaved;
-// --------------------------------------------------------------------
 
 export async function getServiceScoreEstimate(startDate, endDate, hotelId) {
   const { data, error } = await supabase
@@ -492,11 +484,6 @@ export async function getRequestsPerOccupiedRoom(startDate, endDate, hotelId) {
   }));
 }
 
-// REMOVED per request: getTopEscalationReasons & getVIPGuestCount
-// If your UI still imports them, add temporary stubs:
-// export async function getTopEscalationReasons() { return []; }
-// export async function getVIPGuestCount() { return 0; }
-
 export async function getDailyCompletionRate(startDate, endDate, hotelId) {
   const { data, error } = await supabase
     .from('requests')
@@ -565,6 +552,84 @@ export async function getMonthlyCompletionRate(startDate, endDate, hotelId) {
       period,
       completionRate: parseFloat(((completed / total) * 100).toFixed(2)),
     }));
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * DEPARTMENT SETTINGS / HOTEL PROFILE (used by classifier.js too)
+ */
+export async function getEnabledDepartments(hotelId) {
+  const { data, error } = await supabase
+    .from('department_settings')
+    .select('department, enabled')
+    .eq('hotel_id', hotelId);
+
+  if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
+
+  const enabled = (data || [])
+    .filter(
+      (row) =>
+        row.enabled === true ||
+        row.enabled === 'true' ||
+        row.enabled === 'TRUE' ||
+        row.enabled === 1 ||
+        row.enabled === '1'
+    )
+    .map((row) => row.department);
+
+  return enabled;
+}
+
+export async function updateDepartmentToggle(hotelId, department, enabled) {
+  const { error } = await supabase
+    .from('department_settings')
+    .upsert({ hotel_id: hotelId, department, enabled }, { onConflict: ['hotel_id', 'department'] });
+  if (error) throw new Error(`updateDepartmentToggle: ${error.message}`);
+}
+
+export async function getAllDepartmentSettings(hotelId) {
+  const { data, error } = await supabase
+    .from('department_settings')
+    .select('department, enabled')
+    .eq('hotel_id', hotelId);
+  if (error) throw new Error(`getAllDepartmentSettings: ${error.message}`);
+  return data;
+}
+
+export async function getHotelProfile(hotelId) {
+  const { data, error } = await supabase
+    .from('hotels')
+    .select('*')
+    .eq('id', hotelId)
+    .single();
+  // keep shape { data, error } (classifier expects destructuring { data: hotel })
+  return { data, error };
+}
+
+export async function updateHotelProfile(hotelId, updates) {
+  const { error } = await supabase.from('hotels').update(updates).eq('id', hotelId);
+  return error;
+}
+
+export async function getSlaSettings(hotelId) {
+  const { data, error } = await supabase
+    .from('sla_settings')
+    .select('department, ack_time_minutes, res_time_minutes, is_active')
+    .eq('hotel_id', hotelId);
+  return { data, error };
+}
+
+export async function upsertSlaSettings(hotelId, slaMap) {
+  const payload = Object.entries(slaMap).map(([department, { ack_time, res_time, is_active }]) => ({
+    hotel_id: hotelId,
+    department,
+    ack_time_minutes: ack_time,
+    res_time_minutes: res_time,
+    is_active,
+  }));
+  const { data, error } = await supabase
+    .from('sla_settings')
+    .upsert(payload, { onConflict: ['hotel_id', 'department'] });
+  return { data, error };
 }
 
 // Suggested indexes (run once in Supabase SQL):
