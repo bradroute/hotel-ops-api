@@ -48,6 +48,8 @@ router.get('/full', async (req, res) => {
       dailyCompletionRate,
       weeklyCompletionRate,
       monthlyCompletionRate,
+      sentimentTrend,        // ← NEW
+      sentimentBreakdown     // ← NEW
     ] = await Promise.all([
       supabaseService.getTotalRequests(startISO, endISO, hotelId),
       supabaseService.getAvgAckTime(startISO, endISO, hotelId),
@@ -72,6 +74,8 @@ router.get('/full', async (req, res) => {
       supabaseService.getDailyCompletionRate(startISO, endISO, hotelId),
       supabaseService.getWeeklyCompletionRate(startISO, endISO, hotelId),
       supabaseService.getMonthlyCompletionRate(startISO, endISO, hotelId),
+      supabaseService.getSentimentTrend(startISO, endISO, hotelId, tzOffset),  // ← NEW
+      supabaseService.getSentimentBreakdown(startISO, endISO, hotelId),        // ← NEW
     ]);
 
     // Send a single, clean payload
@@ -79,7 +83,7 @@ router.get('/full', async (req, res) => {
       total: totalRequests,
       avgAck: avgAckTime,
       missedSLAs,
-      requestsByHour, // ← new key for the by‑hour chart (0–23)
+      requestsByHour, // ← new key for the by-hour chart (0–23)
       topDepartments,
       commonWords,
       repeatPercent,
@@ -95,6 +99,8 @@ router.get('/full', async (req, res) => {
       dailyCompletionRate,
       weeklyCompletionRate,
       monthlyCompletionRate,
+      sentimentTrend,       // ← NEW
+      sentimentBreakdown,   // ← NEW
     });
   } catch (err) {
     console.error('🔥 Analytics API error:', err.stack || err);

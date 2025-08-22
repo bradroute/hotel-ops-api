@@ -237,6 +237,54 @@ export async function getRequestsByHour(startDate, endDate, hotelId, tzOffsetMin
   return buckets;
 }
 
+// Normalize a few variants safely
+const _normSent = (s) => {
+  const v = String(s || '').toLowerCase();
+  if (v.startsWith('pos')) return 'positive';
+  if (v.startsWith('neg')) return 'negative';
+  if (v.startsWith('neu')) return 'neutral';
+  return 'neutral';
+};
+
+// Sentiment breakdown for the whole range
+export async function getSentimentBreakdown(startDate, endDate, hotelId) {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('sentiment')
+    .eq('hotel_id', hotelId)
+    .gte('created_at', startDate)
+    .lte('created_at', endDate);
+  if (error) throw new Error(error.message);
+
+  const counts = { positive: 0, neutral: 0, negative: 0 };
+  for (const r of data) counts[_normSent(r.sentiment)]++;
+
+  return counts; // { positive, neutral, negative }
+}
+
+// Sentiment trend by day (local-time aware)
+export async function getSentimentTrend(startDate, endDate, hotelId, tzOffsetMinutes = -300) {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('created_at,sentiment')
+    .eq('hotel_id', hotelId)
+    .gte('created_at', startDate)
+    .lte('created_at', endDate);
+  if (error) throw new Error(error.message);
+
+  const byDay = new Map(); // date -> { positive, neutral, negative }
+  for (const { created_at, sentiment } of data) {
+    const local = shiftToLocal(created_at, tzOffsetMinutes).toISOString().slice(0, 10);
+    if (!byDay.has(local)) byDay.set(local, { positive: 0, neutral: 0, negative: 0 });
+    const bucket = byDay.get(local);
+    bucket[_normSent(sentiment)]++;
+  }
+
+  return [...byDay.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, obj]) => ({ date, ...obj })); // [{ date, positive, neutral, negative }]
+}
+
 export async function getTopDepartments(startDate, endDate, hotelId) {
   const { data, error } = await supabase
     .from('requests')
