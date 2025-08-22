@@ -1,4 +1,4 @@
-// src/services/supabaseService.js — fully updated (classifier-safe) — Aug 21, 2025
+// src/services/supabaseService.js — fully updated (spaces-ready, classifier-safe) — Aug 21, 2025
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -37,19 +37,79 @@ const shiftToLocal = (iso, tzOffsetMinutes = -300) => {
   return new Date(utcMs + tzOffsetMinutes * 60 * 1000);
 };
 
+/** Resolve hotel_id by guest_code (a.k.a. property code) */
+export async function getHotelIdByCode(propertyCode) {
+  const code = String(propertyCode || '').trim();
+  if (!code) return null;
+  const { data, error } = await supabase
+    .from('hotels')
+    .select('id')
+    .eq('guest_code', code)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.id ?? null;
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * SPACES (conference rooms, lounge, outlets, etc.)
+ */
+export async function getHotelSpaces(hotelId, { activeOnly = true } = {}) {
+  if (!hotelId) return [];
+  let q = supabase.from('hotel_spaces').select('id, name, category, is_active').eq('hotel_id', hotelId);
+  if (activeOnly) q = q.eq('is_active', true);
+  const { data, error } = await q.order('name', { ascending: true });
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+export async function getHotelSpacesByCode(propertyCode, { activeOnly = true } = {}) {
+  const hotelId = await getHotelIdByCode(propertyCode);
+  if (!hotelId) return [];
+  return getHotelSpaces(hotelId, { activeOnly });
+}
+
+export async function getSpaceById(spaceId) {
+  if (!spaceId) return null;
+  const { data, error } = await supabase
+    .from('hotel_spaces')
+    .select('id, hotel_id, name, category, is_active')
+    .eq('id', spaceId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+
+/** Internal: ensure space_id belongs to hotel_id; otherwise null */
+async function validateSpaceIdForHotel(space_id, hotel_id) {
+  if (!space_id || !hotel_id) return null;
+  const { data, error } = await supabase
+    .from('hotel_spaces')
+    .select('id')
+    .eq('id', space_id)
+    .eq('hotel_id', hotel_id)
+    .maybeSingle();
+  if (error) {
+    console.warn('validateSpaceIdForHotel error:', error.message);
+    return null;
+  }
+  return data?.id ?? null;
+}
+
 /** ──────────────────────────────────────────────────────────────
  * REQUESTS CRUD
  *  - AI decides department & priority via classify()
  *  - enrichRequest() adds summary/root_cause/sentiment/needs_attention
  *  - persists source, app_account_id, from_phone
+ *  - NEW: optional space_id (conference room / lounge, etc.)
  */
 export async function insertRequest({
   hotel_id,
   from_phone,
   message,
-  department, // optional (AI will override if possible)
-  priority, // optional (AI will override if possible)
+  department,      // optional (AI will override if possible)
+  priority,        // optional (AI will override if possible)
   room_number,
+  space_id,        // ← NEW
   telnyx_id,
   is_staff,
   is_vip,
@@ -58,16 +118,14 @@ export async function insertRequest({
   root_cause,
   sentiment,
   needs_attention,
-  app_account_id, // persist the app account that created the request
+  app_account_id,  // persist the app account that created the request
   lat,
   lng,
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
   // ---- AI classification (source of truth for dept/priority) ----
-  let aiDept = null,
-    aiPrio = null,
-    aiRoom = null;
+  let aiDept = null, aiPrio = null, aiRoom = null;
   try {
     const cls = await classify(message, hotel_id);
     aiDept = cls?.department || null;
@@ -130,10 +188,15 @@ export async function insertRequest({
     }
   }
 
+  // Validate space_id (must belong to same hotel)
+  const finalSpaceId = await validateSpaceIdForHotel(space_id, hotel_id);
+
   // Final values (prefer AI → provided → defaults)
   const finalDepartment = aiDept || department || 'Front Desk';
-  const finalPriority = aiPrio || priority || 'normal';
-  const finalRoom = room_number || aiRoom || null;
+  const finalPriority   = aiPrio || priority || 'normal';
+
+  // If a space is provided, we null room_number to honor "one-of" semantics.
+  const finalRoom = finalSpaceId ? null : (room_number || aiRoom || null);
 
   // Build payload and insert
   const payload = {
@@ -143,6 +206,7 @@ export async function insertRequest({
     department: finalDepartment,
     priority: finalPriority,
     room_number: finalRoom,
+    space_id: finalSpaceId ?? null,  // ← NEW
     telnyx_id: telnyx_id ?? null,
     estimated_revenue,
     is_staff: !!is_staff,
@@ -156,7 +220,7 @@ export async function insertRequest({
     needs_attention:
       typeof needs_attention === 'boolean'
         ? needs_attention
-        : enrichment.needs_attention ?? false,
+        : (enrichment.needs_attention ?? false),
     // optional context
     lat: typeof lat === 'number' ? lat : null,
     lng: typeof lng === 'number' ? lng : null,
@@ -310,17 +374,17 @@ export async function getCommonRequestWords(startDate, endDate, hotelId, options
 
   const stopwords = new Set([
     // pronouns / helpers
-    'i', 'me', 'my', 'you', 'your', 'we', 'us', 'our', 'they', 'them', 'he', 'she', 'it', 'their', 'yall',
+    'i','me','my','you','your','we','us','our','they','them','he','she','it','their','yall',
     // greetings / pleasantries
-    'hi', 'hey', 'hello', 'good', 'morning', 'afternoon', 'evening', 'night', 'thanks', 'thank', 'please', 'pls', 'ok', 'okay', 'yeah', 'yep', 'nope',
+    'hi','hey','hello','good','morning','afternoon','evening','night','thanks','thank','please','pls','ok','okay','yeah','yep','nope',
     // generic verbs / modals
-    'need', 'want', 'would', 'like', 'get', 'send', 'bring', 'have', 'do', 'can', 'could', 'is', 'are', 'be', 'was', 'were', 'am', 'has', 'had', 'will', 'may', 'might', 'must', 'should', 'shall', 'make', 'made', 'making', 'give', 'given', 'help', 'let', 'just', 'also', 'still', 'again',
+    'need','want','would','like','get','send','bring','have','do','can','could','is','are','be','was','were','am','has','had','will','may','might','must','should','shall','make','made','making','give','given','help','let','just','also','still','again',
     // prepositions / articles / conjunctions
-    'a', 'an', 'the', 'to', 'in', 'on', 'for', 'from', 'of', 'at', 'as', 'by', 'with', 'about', 'into', 'onto', 'over', 'under', 'out', 'up', 'down', 'off', 'through', 'around', 'between', 'and', 'or', 'but', 'if', 'so', 'not', 'no', 'yes', 'that', 'this', 'there', 'which', 'what', 'when', 'who', 'whom', 'where', 'why', 'how',
+    'a','an','the','to','in','on','for','from','of','at','as','by','with','about','into','onto','over','under','out','up','down','off','through','around','between','and','or','but','if','so','not','no','yes','that','this','there','which','what','when','who','whom','where','why','how',
     // time words
-    'today', 'tonight', 'tomorrow', 'soon', 'later', 'before', 'after', 'now', 'tonite',
-    // domain‑generic filler
-    'room', 'suite', 'number', 'door', 'key', 'keys', 'card', 'cards', 'service', 'front', 'desk', 'guest', 'hotel',
+    'today','tonight','tomorrow','soon','later','before','after','now','tonite',
+    // domain-generic filler
+    'room','suite','number','door','key','keys','card','cards','service','front','desk','guest','hotel',
   ]);
 
   const normalize = (w) => {
@@ -431,9 +495,13 @@ export async function getServiceScoreTrend(startDate, endDate, hotelId) {
   data.forEach((r) => {
     const d = new Date(r.created_at);
     const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7);
+    const weekNum = Math.ceil(
+      ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
+    );
     const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
-    const secs = r.acknowledged_at ? (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000 : null;
+    const secs = r.acknowledged_at
+      ? (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000
+      : null;
     const score = secs == null ? 50 : secs <= 300 ? 100 : secs <= 600 ? 90 : secs <= 1200 ? 80 : 60;
     if (!byWeek[week]) byWeek[week] = [];
     byWeek[week].push(score);
@@ -490,7 +558,9 @@ export async function getRepeatGuestTrend(startDate, endDate, hotelId) {
   data.forEach((r) => {
     const d = new Date(r.created_at);
     const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7);
+    const weekNum = Math.ceil(
+      ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
+    );
     const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
     totals[week] = (totals[week] || 0) + 1;
     counts[r.from_phone] = (counts[r.from_phone] || 0) + 1;
@@ -565,7 +635,9 @@ export async function getWeeklyCompletionRate(startDate, endDate, hotelId) {
   data.forEach(({ created_at, completed_at }) => {
     const d = new Date(created_at);
     const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7);
+    const weekNum = Math.ceil(
+      ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
+    );
     const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
     if (!byWeek[week]) byWeek[week] = { total: 0, completed: 0 };
     byWeek[week].total++;
@@ -630,7 +702,10 @@ export async function getEnabledDepartments(hotelId) {
 export async function updateDepartmentToggle(hotelId, department, enabled) {
   const { error } = await supabase
     .from('department_settings')
-    .upsert({ hotel_id: hotelId, department, enabled }, { onConflict: ['hotel_id', 'department'] });
+    .upsert(
+      { hotel_id: hotelId, department, enabled },
+      { onConflict: ['hotel_id', 'department'] }
+    );
   if (error) throw new Error(`updateDepartmentToggle: ${error.message}`);
 }
 
@@ -667,13 +742,15 @@ export async function getSlaSettings(hotelId) {
 }
 
 export async function upsertSlaSettings(hotelId, slaMap) {
-  const payload = Object.entries(slaMap).map(([department, { ack_time, res_time, is_active }]) => ({
-    hotel_id: hotelId,
-    department,
-    ack_time_minutes: ack_time,
-    res_time_minutes: res_time,
-    is_active,
-  }));
+  const payload = Object.entries(slaMap).map(
+    ([department, { ack_time, res_time, is_active }]) => ({
+      hotel_id: hotelId,
+      department,
+      ack_time_minutes: ack_time,
+      res_time_minutes: res_time,
+      is_active,
+    })
+  );
   const { data, error } = await supabase
     .from('sla_settings')
     .upsert(payload, { onConflict: ['hotel_id', 'department'] });

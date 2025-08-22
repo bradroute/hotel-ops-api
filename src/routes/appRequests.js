@@ -72,10 +72,43 @@ router.post('/push/register', async (req, res) => {
 });
 
 /**
+ * GET /app/spaces/by-code/:propertyCode
+ * Returns active spaces for the property code (for dropdowns)
+ */
+router.get('/spaces/by-code/:propertyCode', async (req, res) => {
+  try {
+    const propertyCode = String(req.params.propertyCode || '').trim();
+    if (!propertyCode) return res.status(400).send('propertyCode required');
+
+    const { data: hotel, error: hErr } = await supabaseAdmin
+      .from('hotels')
+      .select('id, is_active')
+      .eq('guest_code', propertyCode)
+      .single();
+    if (hErr || !hotel || hotel.is_active === false) {
+      return res.status(404).send('Hotel not found.');
+    }
+
+    const { data: spaces, error: sErr } = await supabaseAdmin
+      .from('hotel_spaces')
+      .select('id, name, slug, category')
+      .eq('hotel_id', hotel.id)
+      .eq('is_active', true)
+      .order('name', { ascending: true });
+
+    if (sErr) throw sErr;
+    return res.json({ spaces: spaces || [] });
+  } catch (e) {
+    return res.status(500).send(e.message || 'Could not fetch spaces');
+  }
+});
+
+/**
  * POST /app/request
- * Body: { propertyCode, roomNumber, message, lat, lng, from_phone? }
+ * Body: { propertyCode, message, lat, lng, from_phone?, roomNumber?, spaceId? }
  * Requires: X-App-Session header
  * Note: Department & priority come from AI in insertRequest().
+ * Rule: Provide exactly ONE of roomNumber or spaceId.
  */
 router.post('/request', async (req, res) => {
   try {
@@ -83,9 +116,27 @@ router.post('/request', async (req, res) => {
     const sess = await getSession(token);
     if (!sess) return res.status(401).send('Not signed in.');
 
-    const { propertyCode, roomNumber, message, lat, lng, from_phone } = req.body || {};
-    if (!propertyCode?.trim() || !roomNumber?.trim() || !message?.trim()) {
-      return res.status(400).send('Property code, room number, and message are required.');
+    const {
+      propertyCode,
+      roomNumber,
+      spaceId,           // ← NEW
+      message,
+      lat,
+      lng,
+      from_phone,
+    } = req.body || {};
+
+    if (!propertyCode?.trim() || !message?.trim()) {
+      return res.status(400).send('Property code and message are required.');
+    }
+
+    // one-of validation
+    const hasRoom = !!String(roomNumber || '').trim();
+    const hasSpace = !!String(spaceId || '').trim();
+    if ((hasRoom && hasSpace) || (!hasRoom && !hasSpace)) {
+      return res
+        .status(400)
+        .send('Provide exactly one of roomNumber or spaceId.');
     }
 
     // Find hotel by code
@@ -96,6 +147,21 @@ router.post('/request', async (req, res) => {
       .single();
     if (hErr || !hotel || hotel.is_active === false) {
       return res.status(404).send('Hotel not found.');
+    }
+
+    // If spaceId provided, validate it belongs to this hotel and is active
+    let finalSpaceId = null;
+    if (hasSpace) {
+      const { data: space, error: sErr } = await supabaseAdmin
+        .from('hotel_spaces')
+        .select('id, hotel_id, is_active')
+        .eq('id', spaceId)
+        .maybeSingle();
+      if (sErr) throw sErr;
+      if (!space || space.hotel_id !== hotel.id || space.is_active === false) {
+        return res.status(400).send('Invalid spaceId for this property.');
+      }
+      finalSpaceId = space.id;
     }
 
     // Geofence
@@ -119,13 +185,14 @@ router.post('/request', async (req, res) => {
       if (acct?.phone) phone = toE164(acct.phone);
     }
 
-    // Let the service (AI) set department & priority
+    // Create
     const created = await insertRequest({
       hotel_id: hotel.id,
-      room_number: String(roomNumber).trim(),
+      room_number: hasRoom ? String(roomNumber).trim() : null,
+      space_id: finalSpaceId, // ← NEW
       message: String(message).trim().slice(0, 240),
-      department: null,            // AI fills
-      priority: null,              // AI fills
+      department: null,      // AI fills
+      priority: null,        // AI fills
       source: 'app_guest',
       from_phone: phone || null,
       app_account_id: sess.app_account_id,
@@ -138,6 +205,8 @@ router.post('/request', async (req, res) => {
       created_at: created.created_at,
       department: created.department,
       priority: created.priority,
+      room_number: created.room_number ?? null,
+      space_id: created.space_id ?? null,
     });
   } catch (e) {
     return res.status(500).send(e.message || 'Could not submit request');

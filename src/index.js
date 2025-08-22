@@ -19,9 +19,6 @@ import guestRouter from './routes/guest.js';         // GPS + property-code auth
 import appAuthRouter from './routes/appAuth.js';
 import appRequestsRouter from './routes/appRequests.js';
 
-// ✅ NEW: Push registration for app accounts
-import appPushRouter from './routes/appPush.js';
-
 const app = express();
 app.set('trust proxy', 1);
 
@@ -61,23 +58,16 @@ app.use(
 
 /* ───────────────────────────
  * In-app request submission (X-App-Session required)
+ *   Includes:
+ *     - POST /app/request
+ *     - GET  /app/requests
+ *     - PATCH /app/requests/:id
+ *     - POST /app/push/register  ← handled inside this router
  * ─────────────────────────── */
 app.use(
   '/app',
   rateLimit({ windowMs: 60_000, max: 120, message: 'Too many requests, slow down.' }),
   appRequestsRouter
-);
-
-/* ───────────────────────────
- * NEW: Push token registration
- * Endpoints:
- *   POST /app/push/register
- *   POST /app/push/unregister
- * ─────────────────────────── */
-app.use(
-  '/app/push',
-  rateLimit({ windowMs: 60_000, max: 120, message: 'Too many requests, slow down.' }),
-  appPushRouter
 );
 
 /* ───────────────────────────
