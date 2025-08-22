@@ -1,4 +1,5 @@
 // src/routes/sms.js
+
 import express from 'express';
 import { supabase, supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 import { sendRejectionSms, sendConfirmationSms } from '../services/telnyxService.js';
@@ -12,14 +13,11 @@ import {
 const router = express.Router();
 
 // Log all incoming SMS webhooks
-router.use((req, _res, next) => {
+router.use((req, res, next) => {
   console.log('🔍 /sms payload:', JSON.stringify(req.body).slice(0, 500));
   next();
 });
 
-/* ──────────────────────────────────────────────────────────────
- * Helpers
- * ────────────────────────────────────────────────────────────── */
 async function tryAutoPair(from_phone) {
   console.log('🔄 tryAutoPair called for', from_phone);
   const now = new Date().toISOString();
@@ -28,7 +26,7 @@ async function tryAutoPair(from_phone) {
     .select('*');
   if (slotsErr) console.error('❌ error fetching slots:', slotsErr);
 
-  for (const slot of slots || []) {
+  for (const slot of slots) {
     console.log('  ➡️ checking slot for room', slot.room_number);
     const { data: activeGuests, error: guestErr } = await supabase
       .from('authorized_numbers')
@@ -37,12 +35,12 @@ async function tryAutoPair(from_phone) {
       .or(`expires_at.gt.${now},expires_at.is.null`);
     if (guestErr) console.error('❌ error fetching activeGuests:', guestErr);
 
-    if ((activeGuests?.length || 0) > 0 && slot.current_count < slot.max_devices) {
+    if (activeGuests.length > 0 && slot.current_count < slot.max_devices) {
       console.log('    ✅ pairing', from_phone, 'to room', slot.room_number);
       const expires_at = activeGuests[0].expires_at;
 
       // Insert authorized number
-      const { error: authErr } = await supabaseAdmin
+      const { data: insertedAuth, error: authErr } = await supabaseAdmin
         .from('authorized_numbers')
         .insert({
           phone: from_phone,
@@ -50,7 +48,8 @@ async function tryAutoPair(from_phone) {
           expires_at,
           hotel_id: slot.hotel_id,
           is_staff: false,
-        });
+        })
+        .select();
       if (authErr) console.error('❌ insert auth failed:', authErr);
 
       // Bump slot count
@@ -67,60 +66,6 @@ async function tryAutoPair(from_phone) {
   console.log('    ❌ no slot available for', from_phone);
   return false;
 }
-
-// Normalize to a soft “word” form
-const norm = (s = '') => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-// Try to detect a hotel_space name from free text
-function detectSpaceLabel(message = '', spaces = []) {
-  const m = ` ${norm(message)} `;
-
-  // helpful generic synonyms that map to common slugs/names
-  const generic = [
-    { needle: 'conference room', match: (n) => n.includes('conference') || n.includes('meeting') || n.includes('board') },
-    { needle: 'meeting room',    match: (n) => n.includes('meeting') || n.includes('conference') || n.includes('board') },
-    { needle: 'board room',      match: (n) => n.includes('board') },
-    { needle: 'lobby',           match: (n) => n.includes('lobby') },
-    { needle: 'bar',             match: (n) => n.includes('bar') || n.includes('lounge') },
-    { needle: 'lounge',          match: (n) => n.includes('lounge') },
-    { needle: 'sun deck',        match: (n) => n.includes('sun') && n.includes('deck') },
-    { needle: 'pool',            match: (n) => n.includes('pool') },
-    { needle: 'patio',           match: (n) => n.includes('patio') || n.includes('terrace') },
-  ];
-
-  for (const sp of spaces) {
-    const name = norm(sp.name || '');
-    const slug = norm(sp.slug || '');
-
-    // direct mentions: name/slug/“… room”
-    const patterns = [
-      ` ${name} `,
-      ` ${slug} `,
-      ` ${name} room `,
-      ` ${slug} room `,
-      ` the ${name} `,
-      ` the ${slug} `,
-    ];
-    if (patterns.some((p) => m.includes(p))) return sp.name;
-  }
-
-  // generic phrases — pick the first space whose name/slug matches predicate
-  for (const g of generic) {
-    if (m.includes(` ${g.needle} `)) {
-      const hit = spaces.find((sp) => {
-        const n = norm(sp.name || '') + ' ' + norm(sp.slug || '');
-        return g.match(n);
-      });
-      if (hit) return hit.name;
-    }
-  }
-
-  return null;
-}
-
-/* ──────────────────────────────────────────────────────────────
- * Routes
- * ────────────────────────────────────────────────────────────── */
 
 router.post('/', async (req, res) => {
   console.log('🚀 POST /sms hit');
@@ -174,11 +119,14 @@ router.post('/', async (req, res) => {
     if (!isAuthorized) {
       const { data: existing } = await supabase
         .from('authorized_numbers')
-        .select('room_number,expires_at,hotel_id')
+        .select('room_number,expires_at')
         .eq('phone', from_phone)
-        .maybeSingle();
+        .single();
 
-      if (existing && (existing.expires_at === null || existing.expires_at > now)) {
+      if (
+        existing &&
+        (existing.expires_at === null || existing.expires_at > now)
+      ) {
         isAuthorized = true;
       } else {
         isAuthorized = await tryAutoPair(from_phone);
@@ -201,7 +149,7 @@ router.post('/', async (req, res) => {
       'Operon: Thanks for contacting Operon on behalf of The Crosby Hotel. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. We will not sell or share your mobile information for promotional or marketing purposes.'
     );
 
-    // 8) Hotel lookup (by inbound number)
+    // 8) Hotel lookup
     const { data: hotel, error: hotelErr } = await supabase
       .from('hotels')
       .select('id')
@@ -212,47 +160,16 @@ router.post('/', async (req, res) => {
     }
     const hotel_id = hotel.id;
 
-    // 9) Classification (dept/priority [+ optional room_number from AI])
+    // 9) Classification
     let classification = { department: 'Front Desk', priority: 'normal', room_number: null };
     try {
       classification = await classify(message, hotel_id);
     } catch (err) {
       console.warn('⚠️ Classification failed:', err.message);
     }
-    let { department, priority, room_number } = classification;
+    const { department, priority, room_number } = classification;
 
-    // 10) Space detection from message (Conference, Lounge, etc.)
-    try {
-      const { data: spaces } = await supabase
-        .from('hotel_spaces')
-        .select('id,name,slug,is_active')
-        .eq('hotel_id', hotel_id)
-        .eq('is_active', true);
-
-      const spaceLabel = detectSpaceLabel(message, spaces || []);
-      if (!room_number && spaceLabel) {
-        room_number = spaceLabel; // store the display name into requests.room_number
-      }
-    } catch (err) {
-      console.warn('⚠️ hotel_spaces lookup failed:', err.message);
-    }
-
-    // 11) If still no room/space, fall back to guest’s authorized room at this hotel
-    if (!room_number) {
-      try {
-        const { data: authMap } = await supabase
-          .from('authorized_numbers')
-          .select('room_number')
-          .eq('phone', from_phone)
-          .eq('hotel_id', hotel_id)
-          .maybeSingle();
-        if (authMap?.room_number) room_number = authMap.room_number;
-      } catch (err) {
-        console.warn('⚠️ authorized_numbers fallback failed:', err.message);
-      }
-    }
-
-    // 12) VIP tracking
+    // 10) Guest tracking (VIP logic)
     let isVip = false;
     if (!isStaff) {
       const { data: guest } = await supabase
@@ -261,7 +178,7 @@ router.post('/', async (req, res) => {
         .eq('phone_number', from_phone)
         .single();
       if (guest) {
-        const newTotal = (guest.total_requests || 0) + 1;
+        const newTotal = guest.total_requests + 1;
         isVip = newTotal > 10;
         await supabase
           .from('guests')
@@ -274,14 +191,14 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 13) Insert request (now with room_number possibly = “Conference”, “Lounge”, etc.)
+    // 11) Insert request
     await insertRequest({
       hotel_id,
       from_phone,
       message,
       department,
       priority,
-      room_number: room_number || null,
+      room_number,
       is_staff: isStaff,
       is_vip: isVip,
       telnyx_id: telnyxId,

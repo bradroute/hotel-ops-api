@@ -1,7 +1,11 @@
 // src/services/classifier.js
 import OpenAI from 'openai';
 import { openAIApiKey } from '../config/index.js';
-import { getEnabledDepartments, getHotelProfile } from './supabaseService.js';
+import {
+  getEnabledDepartments,
+  getHotelProfile,
+  getHotelSpaces,   // ← NEW: list of active named spaces for the hotel
+} from './supabaseService.js';
 
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
@@ -103,6 +107,59 @@ function derivePriorityFromText(text = '') {
 }
 
 /* ----------------------------------------------
+   ROOM / SPACE EXTRACTION
+-----------------------------------------------*/
+const norm = (s = '') => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// try to pull a number-like room (e.g., "room 204", "suite 1203", or bare 204 if "room" is present)
+function extractNumericRoom(text = '') {
+  const t = text;
+  // explicit label first
+  const labeled = t.match(/\b(?:room|rm|suite|unit|apt|apartment)\s*#?\s*([0-9]{1,4}[a-zA-Z]?)/i);
+  if (labeled) return labeled[1];
+
+  // bare number fallback only if we mention a room-ish word somewhere
+  if (/\b(room|rm|suite|unit|apt|apartment)\b/i.test(t)) {
+    const bare = t.match(/\b([1-9][0-9]{0,3}[a-zA-Z]?)\b/);
+    if (bare) return bare[1];
+  }
+  return null;
+}
+
+// match against hotel's named spaces (hotel_spaces) and a few safe generics
+function extractSpaceName(text = '', spaces = []) {
+  const t = norm(text);
+  for (const sp of spaces) {
+    const name = norm(sp?.name || '');
+    const slug = norm(sp?.slug || '');
+    if (name && t.includes(name)) return sp.name;
+    if (slug && t.includes(slug)) return sp.name;
+  }
+  // generic fallbacks if not configured in DB
+  if (/\bconference\b/.test(t)) return 'Conference';
+  if (/\blounge\b/.test(t)) return 'The Lounge';
+  if (/\bsun\s*deck\b/.test(t)) return 'Sun Deck';
+  return null;
+}
+
+async function inferRoomOrSpace(text, hotelId) {
+  let spaces = [];
+  try {
+    spaces = (await getHotelSpaces(hotelId)) || [];
+  } catch (_) {}
+
+  // prefer explicit space name if present
+  const space = extractSpaceName(text, spaces);
+  if (space) return space;
+
+  // else try numeric
+  const num = extractNumericRoom(text);
+  if (num) return num;
+
+  return null;
+}
+
+/* ----------------------------------------------
    DEPARTMENT & PRIORITY CLASSIFICATION
 -----------------------------------------------*/
 export async function classify(text, hotelId) {
@@ -118,10 +175,16 @@ export async function classify(text, hotelId) {
   const enabled = await getEnabledDepartments(hotelId);
   if (!enabled?.length) {
     console.warn(`❌ No enabled departments for hotel ${hotelId}, defaulting.`);
-    // Still derive a reasonable priority from text
-    return { department: 'Front Desk', priority: derivePriorityFromText(text), room_number: null };
+    return {
+      department: 'Front Desk',
+      priority: derivePriorityFromText(text),
+      room_number: await inferRoomOrSpace(text, hotelId), // still try to populate a room/space
+    };
   }
   console.log('✅ Enabled departments:', enabled);
+
+  // 0) Try to infer room/space early from user text
+  const inferredRoom = await inferRoomOrSpace(text, hotelId);
 
   // 1) Fast keyword override for department
   const forced = overrideDepartment(text, enabled, propertyType);
@@ -135,10 +198,10 @@ export async function classify(text, hotelId) {
     } catch {
       pr = derivePriorityFromText(text);
     }
-    return { department: forced, priority: pr, room_number: null };
+    return { department: forced, priority: pr, room_number: inferredRoom ?? null };
   }
 
-  // 2) AI classify department + priority
+  // 2) AI classify department + priority (+ room if it finds one)
   const departmentList = enabled.map((d, i) => `${i + 1}. ${d}`).join('\n');
   const prompt = `You are a ${propertyType} task classifier.
 
@@ -187,10 +250,16 @@ Message: "${text}"`;
     if (hint !== 'normal') priority = hint;
   }
 
+  // Prefer explicit model room_number, otherwise our deterministic inference
+  let room_number = parsed.room_number ?? null;
+  if (!room_number) {
+    room_number = inferredRoom ?? null;
+  }
+
   return {
     department: parsed.department,
     priority,
-    room_number: parsed.room_number ?? null,
+    room_number,
   };
 }
 
