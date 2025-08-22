@@ -196,7 +196,11 @@ export async function insertRequest({
   const finalPriority   = aiPrio || priority || 'normal';
 
   // If a space is provided, we null room_number to honor "one-of" semantics.
-  const finalRoom = finalSpaceId ? null : (room_number || aiRoom || null);
+   const normalizeRoom = (v) =>
+    typeof v === 'string' ? v.trim() : (v == null ? '' : String(v));
+   const providedRoom = normalizeRoom(room_number);
+   const aiRoomNorm   = normalizeRoom(aiRoom);
+   const finalRoom    = providedRoom !== '' ? providedRoom : aiRoomNorm; // may be ''
 
   // Build payload and insert
   const payload = {
