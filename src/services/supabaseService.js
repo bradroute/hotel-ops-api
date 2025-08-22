@@ -1,9 +1,10 @@
-// src/services/supabaseService.js
+// src/services/supabaseService.js — merged full file (Aug 21, 2025)
 import dotenv from 'dotenv';
 dotenv.config();
 
 import ws from 'isomorphic-ws';
 if (typeof globalThis.WebSocket === 'undefined') {
+  // @ts-ignore
   globalThis.WebSocket = ws;
 }
 
@@ -30,6 +31,12 @@ const toE164 = (v) => {
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 };
 
+/* small date utils used in a few analytics helpers */
+const shiftToLocal = (iso, tzOffsetMinutes = -300) => {
+  const utcMs = new Date(iso).getTime();
+  return new Date(utcMs + tzOffsetMinutes * 60 * 1000);
+};
+
 /** ──────────────────────────────────────────────────────────────
  * REQUESTS CRUD
  *  - AI decides department & priority via classify()
@@ -40,8 +47,8 @@ export async function insertRequest({
   hotel_id,
   from_phone,
   message,
-  department,     // optional (AI will override if possible)
-  priority,       // optional (AI will override if possible)
+  department, // optional (AI will override if possible)
+  priority, // optional (AI will override if possible)
   room_number,
   telnyx_id,
   is_staff,
@@ -51,14 +58,16 @@ export async function insertRequest({
   root_cause,
   sentiment,
   needs_attention,
-  app_account_id,  // NEW: persist the app account that created the request
+  app_account_id, // NEW: persist the app account that created the request
   lat,
   lng,
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
   // ---- AI classification (source of truth for dept/priority) ----
-  let aiDept = null, aiPrio = null, aiRoom = null;
+  let aiDept = null,
+    aiPrio = null,
+    aiRoom = null;
   try {
     const cls = await classify(message, hotel_id);
     aiDept = cls?.department || null;
@@ -149,7 +158,7 @@ export async function insertRequest({
     needs_attention:
       typeof needs_attention === 'boolean'
         ? needs_attention
-        : (enrichment.needs_attention ?? false),
+        : enrichment.needs_attention ?? false,
     // optional context
     lat: typeof lat === 'number' ? lat : null,
     lng: typeof lng === 'number' ? lng : null,
@@ -200,7 +209,7 @@ export async function getAvgAckTime(startDate, endDate, hotelId) {
 }
 
 export async function getMissedSLACount(startDate, endDate, hotelId) {
-  const SLA_MS = 10 * 60 * 1000;
+  const SLA_MS = 10 * 60 * 1000; // 10 minutes
   const { data, error } = await supabase
     .from('requests')
     .select('created_at, acknowledged_at')
@@ -213,7 +222,8 @@ export async function getMissedSLACount(startDate, endDate, hotelId) {
   ).length;
 }
 
-export async function getRequestsPerDay(startDate, endDate, hotelId) {
+// REPLACEMENT for the "Requests per Day" chart → Requests by Hour (0–23)
+export async function getRequestsByHour(startDate, endDate, hotelId, tzOffsetMinutes = -300) {
   const { data, error } = await supabase
     .from('requests')
     .select('created_at')
@@ -221,12 +231,14 @@ export async function getRequestsPerDay(startDate, endDate, hotelId) {
     .gte('created_at', startDate)
     .lte('created_at', endDate);
   if (error) throw new Error(error.message);
-  const counts = {};
-  data.forEach((r) => {
-    const day = r.created_at.slice(0, 10);
-    counts[day] = (counts[day] || 0) + 1;
-  });
-  return Object.entries(counts).map(([date, count]) => ({ date, count }));
+
+  const buckets = Array.from({ length: 24 }, (_, h) => ({ hour: h, count: 0 }));
+  for (const { created_at } of data) {
+    const local = shiftToLocal(created_at, tzOffsetMinutes);
+    const hourLocal = local.getUTCHours(); // after shifting, UTC hours == local hours
+    buckets[hourLocal].count++;
+  }
+  return buckets; // [{ hour: 0..23, count }]
 }
 
 export async function getTopDepartments(startDate, endDate, hotelId) {
@@ -248,19 +260,38 @@ export async function getTopDepartments(startDate, endDate, hotelId) {
     .map(([name, value]) => ({ name, value }));
 }
 
-export async function getCommonRequestWords(startDate, endDate, hotelId) {
+// TIGHTENED Common Request Words
+// Usage: getCommonRequestWords(start, end, hotelId, { topN: 5, minLen: 3, minCount: 2 })
+export async function getCommonRequestWords(startDate, endDate, hotelId, options = {}) {
+  const { topN = 5, minLen = 3, minCount = 2 } = options;
+
   const stopwords = new Set([
-    'i','me','my','you','your','we','us','our','they','them','he','she','it','their',
-    'hi','hey','hello','good','morning','afternoon','evening','night','thanks','thank','please','ok','okay',
-    'need','want','would','like','get','send','bring','have','do','can','could','is','are','be','was','were','am','has','had','will','may','might','must','should','shall',
-    'a','an','the','to','in','on','for','from','of','at','as','by','with','about','into','onto','over','under','out','up','down','off','through','around','between',
-    'and','or','but','if','so','not','no','yes','that','this','there','which','what','when','who','whom','where','why','how',
-    'right','now','some','any','all','just','too','more','less','still','again','another','same',
-    'today','tonight','tomorrow','soon','later','before','after',
-    'call','text','message','reply',
-    'room','suite','number','door',
-    'something','thing','stuff','items'
+    // pronouns / helpers
+    'i', 'me', 'my', 'you', 'your', 'we', 'us', 'our', 'they', 'them', 'he', 'she', 'it', 'their', 'yall',
+    // greetings / pleasantries
+    'hi', 'hey', 'hello', 'good', 'morning', 'afternoon', 'evening', 'night', 'thanks', 'thank', 'please', 'pls', 'ok', 'okay', 'yeah', 'yep', 'nope',
+    // generic verbs / modals
+    'need', 'want', 'would', 'like', 'get', 'send', 'bring', 'have', 'do', 'can', 'could', 'is', 'are', 'be', 'was', 'were', 'am', 'has', 'had', 'will', 'may', 'might', 'must', 'should', 'shall', 'make', 'made', 'making', 'give', 'given', 'help', 'let', 'just', 'also', 'still', 'again',
+    // prepositions / articles / conjunctions
+    'a', 'an', 'the', 'to', 'in', 'on', 'for', 'from', 'of', 'at', 'as', 'by', 'with', 'about', 'into', 'onto', 'over', 'under', 'out', 'up', 'down', 'off', 'through', 'around', 'between', 'and', 'or', 'but', 'if', 'so', 'not', 'no', 'yes', 'that', 'this', 'there', 'which', 'what', 'when', 'who', 'whom', 'where', 'why', 'how',
+    // time words
+    'today', 'tonight', 'tomorrow', 'soon', 'later', 'before', 'after', 'now', 'tonite',
+    // domain‑generic filler
+    'room', 'suite', 'number', 'door', 'key', 'keys', 'card', 'cards', 'service', 'front', 'desk', 'guest', 'hotel',
   ]);
+
+  // Normalizer: lowercase, collapse wifi variants, strip non‑letters, naive singularization
+  const normalize = (w) => {
+    if (!w) return '';
+    let s = w.toLowerCase();
+    s = s.replace(/wi[-\s]?fi/g, 'wifi');
+    s = s.replace(/[^a-z]/g, '');
+    if (!s) return '';
+    if (s.length > 4 && s.endsWith('es')) s = s.slice(0, -2);
+    else if (s.length > 3 && s.endsWith('s')) s = s.slice(0, -1);
+    return s;
+  };
+
   const { data, error } = await supabase
     .from('requests')
     .select('message')
@@ -268,32 +299,23 @@ export async function getCommonRequestWords(startDate, endDate, hotelId) {
     .gte('created_at', startDate)
     .lte('created_at', endDate);
   if (error) throw new Error(error.message);
-  const wordCounts = {};
-  data.forEach(({ message }) => {
-    message
-      .toLowerCase()
-      .split(/\W+/)
-      .forEach((word) => {
-        if (word.length >= 3 && !stopwords.has(word) && !/\d/.test(word)) {
-          wordCounts[word] = (wordCounts[word] || 0) + 1;
-        }
-      });
-  });
-  return Object.entries(wordCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([word, count]) => ({ word, count }));
-}
 
-export async function getVIPGuestCount(startDate, endDate) {
-  const { count, error } = await supabase
-    .from('guests')
-    .select('id', { head: true, count: 'exact' })
-    .eq('is_vip', true)
-    .gte('last_seen', startDate)
-    .lte('last_seen', endDate);
-  if (error) throw new Error(error.message);
-  return count;
+  const counts = new Map();
+  for (const { message } of data) {
+    if (!message) continue;
+    const tokens = message.split(/\b/);
+    for (const t of tokens) {
+      const w = normalize(t);
+      if (!w || w.length < minLen) continue;
+      if (stopwords.has(w)) continue;
+      if (/\d/.test(w)) continue;
+      counts.set(w, (counts.get(w) || 0) + 1);
+    }
+  }
+
+  const filtered = [...counts.entries()].filter(([_, c]) => c >= minCount);
+  filtered.sort((a, b) => b[1] - a[1]);
+  return filtered.slice(0, topN).map(([word, count]) => ({ word, count }));
 }
 
 export async function getRepeatRequestRate(startDate, endDate, hotelId) {
@@ -329,7 +351,7 @@ export async function getEstimatedRevenue(startDate, endDate, hotelId) {
 // ------------- UPDATED LABOR TIME SAVED ANALYTICS BELOW -------------
 export async function getLaborTimeSaved(startDate, endDate, hotelId) {
   const total = await getTotalRequests(startDate, endDate, hotelId);
-  const MINUTES_SAVED_PER_REQUEST = 4;
+  const MINUTES_SAVED_PER_REQUEST = 4; // conservative default
   return total * MINUTES_SAVED_PER_REQUEST;
 }
 
@@ -369,13 +391,9 @@ export async function getServiceScoreTrend(startDate, endDate, hotelId) {
   data.forEach((r) => {
     const d = new Date(r.created_at);
     const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(
-      ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
-    );
+    const weekNum = Math.ceil(((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7);
     const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
-    const secs = r.acknowledged_at
-      ? (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000
-      : null;
+    const secs = r.acknowledged_at ? (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000 : null;
     const score = secs == null ? 50 : secs <= 300 ? 100 : secs <= 600 ? 90 : secs <= 1200 ? 80 : 60;
     if (!byWeek[week]) byWeek[week] = [];
     byWeek[week].push(score);
@@ -432,9 +450,7 @@ export async function getRepeatGuestTrend(startDate, endDate, hotelId) {
   data.forEach((r) => {
     const d = new Date(r.created_at);
     const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(
-      ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
-    );
+    const weekNum = Math.ceil(((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7);
     const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
     totals[week] = (totals[week] || 0) + 1;
     counts[r.from_phone] = (counts[r.from_phone] || 0) + 1;
@@ -476,24 +492,10 @@ export async function getRequestsPerOccupiedRoom(startDate, endDate, hotelId) {
   }));
 }
 
-export async function getTopEscalationReasons(startDate, endDate, hotelId) {
-  const { data, error } = await supabase
-    .from('requests')
-    .select('escalation_reason')
-    .eq('hotel_id', hotelId)
-    .gte('created_at', startDate)
-    .lte('created_at', endDate)
-    .not('escalation_reason', 'is', null);
-  if (error) throw new Error(error.message);
-  const reasons = {};
-  data.forEach((r) => {
-    reasons[r.escalation_reason] = (reasons[r.escalation_reason] || 0) + 1;
-  });
-  return Object.entries(reasons)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([reason, count]) => ({ reason, count }));
-}
+// REMOVED per request: getTopEscalationReasons & getVIPGuestCount
+// If your UI still imports them, add temporary stubs:
+// export async function getTopEscalationReasons() { return []; }
+// export async function getVIPGuestCount() { return 0; }
 
 export async function getDailyCompletionRate(startDate, endDate, hotelId) {
   const { data, error } = await supabase
@@ -528,9 +530,7 @@ export async function getWeeklyCompletionRate(startDate, endDate, hotelId) {
   data.forEach(({ created_at, completed_at }) => {
     const d = new Date(created_at);
     const year = d.getUTCFullYear();
-    const weekNum = Math.ceil(
-      ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
-    );
+    const weekNum = Math.ceil(((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7);
     const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
     if (!byWeek[week]) byWeek[week] = { total: 0, completed: 0 };
     byWeek[week].total++;
@@ -567,84 +567,7 @@ export async function getMonthlyCompletionRate(startDate, endDate, hotelId) {
     }));
 }
 
-/** ──────────────────────────────────────────────────────────────
- * DEPARTMENT SETTINGS / HOTEL PROFILE (used by classifier.js too)
- */
-export async function getEnabledDepartments(hotelId) {
-  const { data, error } = await supabase
-    .from('department_settings')
-    .select('department, enabled')
-    .eq('hotel_id', hotelId);
-
-  if (error) throw new Error(`getEnabledDepartments: ${error.message}`);
-
-  const enabled = (data || [])
-    .filter(
-      (row) =>
-        row.enabled === true ||
-        row.enabled === 'true' ||
-        row.enabled === 'TRUE' ||
-        row.enabled === 1 ||
-        row.enabled === '1'
-    )
-    .map((row) => row.department);
-
-  return enabled;
-}
-
-export async function updateDepartmentToggle(hotelId, department, enabled) {
-  const { error } = await supabase
-    .from('department_settings')
-    .upsert(
-      { hotel_id: hotelId, department, enabled },
-      { onConflict: ['hotel_id', 'department'] }
-    );
-  if (error) throw new Error(`updateDepartmentToggle: ${error.message}`);
-}
-
-export async function getAllDepartmentSettings(hotelId) {
-  const { data, error } = await supabase
-    .from('department_settings')
-    .select('department, enabled')
-    .eq('hotel_id', hotelId);
-  if (error) throw new Error(`getAllDepartmentSettings: ${error.message}`);
-  return data;
-}
-
-export async function getHotelProfile(hotelId) {
-  const { data, error } = await supabase
-    .from('hotels')
-    .select('*')
-    .eq('id', hotelId)
-    .single();
-  return { data, error };
-}
-
-export async function updateHotelProfile(hotelId, updates) {
-  const { error } = await supabase.from('hotels').update(updates).eq('id', hotelId);
-  return error;
-}
-
-export async function getSlaSettings(hotelId) {
-  const { data, error } = await supabase
-    .from('sla_settings')
-    .select('department, ack_time_minutes, res_time_minutes, is_active')
-    .eq('hotel_id', hotelId);
-  return { data, error };
-}
-
-export async function upsertSlaSettings(hotelId, slaMap) {
-  const payload = Object.entries(slaMap).map(
-    ([department, { ack_time, res_time, is_active }]) => ({
-      hotel_id: hotelId,
-      department,
-      ack_time_minutes: ack_time,
-      res_time_minutes: res_time,
-      is_active,
-    })
-  );
-  const { data, error } = await supabase
-    .from('sla_settings')
-    .upsert(payload, { onConflict: ['hotel_id', 'department'] });
-  return { data, error };
-}
+// Suggested indexes (run once in Supabase SQL):
+// CREATE INDEX IF NOT EXISTS idx_requests_hotel_created_at ON public.requests (hotel_id, created_at);
+// CREATE INDEX IF NOT EXISTS idx_requests_open_hotel ON public.requests (hotel_id) WHERE completed = false;
+// CREATE INDEX IF NOT EXISTS idx_guests_hotel_phone ON public.guests (hotel_id, phone_number);
