@@ -25,9 +25,6 @@ function toE164(v = '') {
   if (!d) return '';
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 }
-
-// Normalize token so it passes your DB CHECK constraint:
-// staff_devices.expo_push_token LIKE 'ExponentPushToken%'
 function normalizeExpoToken(t) {
   if (typeof t !== 'string') return '';
   if (t.startsWith('ExpoPushToken[')) return t.replace('ExpoPushToken[', 'ExponentPushToken[');
@@ -39,7 +36,7 @@ function milesBetween(lat1, lon1, lat2, lon2) {
   const R = 3958.7613;
   const toRad = (d) => (d * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lat2 - lon1);
+  const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
@@ -47,10 +44,7 @@ function milesBetween(lat1, lon1, lat2, lon2) {
 }
 
 /* ===========================================================
- * POST /app/push/register
- * 1) Guest app (X-App-Session header present) -> app_push_tokens
- * 2) Staff app (no session) -> requires user_id + hotel_id -> staff_devices
- *    (No DB changes required; we do a select-then-insert/update to dedupe.)
+ * POST /app/push/register  (guest OR staff)
  * =========================================================== */
 router.post('/push/register', async (req, res) => {
   try {
@@ -64,34 +58,25 @@ router.post('/push/register', async (req, res) => {
     if (!rawToken || typeof rawToken !== 'string') {
       return res.status(400).json({ error: 'expoToken / expoPushToken is required' });
     }
-
-    // Accept both ExpoPushToken[...] and ExponentPushToken[...], but
-    // require the latter when writing to staff_devices (DB CHECK).
     const expoToken = normalizeExpoToken(rawToken);
 
     if (sess) {
-      // ---- Guest app token registration (app_push_tokens) ----
-      // Manual upsert (no UNIQUE needed): look up by (app_account_id, expo_token)
-      const { data: existing, error: findErr } = await supabaseAdmin
+      // Guest app → app_push_tokens (manual upsert)
+      const { data: existing } = await supabaseAdmin
         .from('app_push_tokens')
         .select('id')
         .eq('app_account_id', sess.app_account_id)
         .eq('expo_token', expoToken)
         .maybeSingle();
-      if (findErr) throw findErr;
 
       if (existing?.id) {
-        const { error: updErr } = await supabaseAdmin
+        const { error } = await supabaseAdmin
           .from('app_push_tokens')
-          .update({
-            platform,
-            device_desc: deviceDesc,
-            updated_at: new Date().toISOString(),
-          })
+          .update({ platform, device_desc: deviceDesc, updated_at: new Date().toISOString() })
           .eq('id', existing.id);
-        if (updErr) throw updErr;
+        if (error) throw error;
       } else {
-        const { error: insErr } = await supabaseAdmin
+        const { error } = await supabaseAdmin
           .from('app_push_tokens')
           .insert({
             app_account_id: sess.app_account_id,
@@ -99,13 +84,12 @@ router.post('/push/register', async (req, res) => {
             platform,
             device_desc: deviceDesc,
           });
-        if (insErr) throw insErr;
+        if (error) throw error;
       }
-
       return res.json({ ok: true, mode: 'guest' });
     }
 
-    // ---- Staff app token registration (staff_devices) ----
+    // Staff app → staff_devices (manual upsert)
     const user_id = req.body?.user_id;
     const hotel_id = req.body?.hotel_id;
     if (!user_id || !hotel_id) {
@@ -114,27 +98,21 @@ router.post('/push/register', async (req, res) => {
         .json({ error: 'Not signed in (guest) and missing user_id/hotel_id for staff registration' });
     }
 
-    // Manual upsert by (user_id, expo_push_token)
-    const { data: existing, error: sFindErr } = await supabaseAdmin
+    const { data: sdExisting } = await supabaseAdmin
       .from('staff_devices')
       .select('id')
       .eq('user_id', user_id)
       .eq('expo_push_token', expoToken)
       .maybeSingle();
-    if (sFindErr) throw sFindErr;
 
-    if (existing?.id) {
-      const { error: sUpdErr } = await supabaseAdmin
+    if (sdExisting?.id) {
+      const { error } = await supabaseAdmin
         .from('staff_devices')
-        .update({
-          hotel_id,
-          platform,
-          last_seen_at: new Date().toISOString(),
-        })
-        .eq('id', existing.id);
-      if (sUpdErr) throw sUpdErr;
+        .update({ hotel_id, platform, last_seen_at: new Date().toISOString() })
+        .eq('id', sdExisting.id);
+      if (error) throw error;
     } else {
-      const { error: sInsErr } = await supabaseAdmin
+      const { error } = await supabaseAdmin
         .from('staff_devices')
         .insert({
           user_id,
@@ -143,7 +121,7 @@ router.post('/push/register', async (req, res) => {
           platform,
           last_seen_at: new Date().toISOString(),
         });
-      if (sInsErr) throw sInsErr;
+      if (error) throw error;
     }
 
     return res.json({ ok: true, mode: 'staff' });
@@ -154,38 +132,38 @@ router.post('/push/register', async (req, res) => {
 });
 
 /* ===========================================================
- * GET /app/spaces
- * Query: propertyCode | code (guest_code), or hotel_id
- * Optional search: q
- * Returns: { spaces: [{ id, name, slug }] }
- *   - Case-insensitive hotel lookup
- *   - Never 404s; returns [] if not found
+ * GET /app/spaces  (+ legacy aliases)
+ *   ?propertyCode= or ?code=  (case-insensitive match to hotels.guest_code)
+ *   or ?hotel_id=
+ *   optional ?q= to filter by name
+ * Returns 200 with { spaces: [] } even if hotel unknown (no more 404 on route).
  * =========================================================== */
-router.get('/spaces', async (req, res) => {
+async function spacesHandler(req, res) {
   try {
-    const rawCode = String(req.query.propertyCode ?? req.query.code ?? '').trim();
-    const q = String(req.query.q ?? '').trim();
-    let hotel_id = String(req.query.hotel_id ?? req.query.hotelId ?? '').trim();
+    const code =
+      String(req.query.propertyCode || req.query.code || '').trim();
+    const q = String(req.query.q || '').trim();
+    let hotel_id = req.query.hotel_id ? String(req.query.hotel_id).trim() : '';
 
-    // Resolve hotel_id via guest_code if not provided
-    if (!hotel_id) {
-      if (!rawCode) return res.json({ spaces: [] }); // be forgiving
-
-      const { data: hotels, error: hErr } = await supabaseAdmin
+    if (!hotel_id && code) {
+      const { data: hotel, error: hErr } = await supabaseAdmin
         .from('hotels')
-        .select('id, is_active, guest_code')
-        .ilike('guest_code', rawCode) // case-insensitive
-        .limit(1);
-
-      if (hErr || !hotels?.length || hotels[0].is_active === false) {
-        return res.json({ spaces: [] }); // never 404 the picker
+        .select('id, is_active')
+        .ilike('guest_code', code) // case-insensitive exact match
+        .maybeSingle();
+      if (!hErr && hotel?.id && hotel.is_active !== false) {
+        hotel_id = hotel.id;
       }
-      hotel_id = hotels[0].id;
+    }
+
+    if (!hotel_id) {
+      // Graceful: return empty list; caller shows "no spaces"
+      return res.json({ spaces: [] });
     }
 
     let query = supabaseAdmin
       .from('hotel_spaces')
-      .select('id, name, slug')
+      .select('id, name, slug, category')
       .eq('hotel_id', hotel_id)
       .eq('is_active', true);
 
@@ -196,16 +174,15 @@ router.get('/spaces', async (req, res) => {
 
     return res.json({ spaces: spaces ?? [] });
   } catch (e) {
-    console.error('/app/spaces error', e);
-    return res.json({ spaces: [] }); // keep UI happy
+    return res.status(500).json({ error: e.message || 'Could not fetch spaces' });
   }
-});
+}
+router.get('/spaces', spacesHandler);
+router.get('/hotel-spaces', spacesHandler); // legacy alias
+router.get('/hotelSpaces', spacesHandler);  // legacy alias
 
 /* ===========================================================
  * POST /app/request
- * Requires X-App-Session; geofences; supports room OR space
- * Writes room label into requests.room_number and (if available)
- * space_id into requests.space_id. Ensures from_phone is not null.
  * =========================================================== */
 router.post('/request', async (req, res) => {
   try {
@@ -239,20 +216,17 @@ router.post('/request', async (req, res) => {
     if (roomProvided && spaceProvided) {
       return res.status(400).send('Provide only one: roomNumber OR space (not both).');
     }
-
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).send('Location required.');
     }
 
-    // Hotel by guest_code (case-insensitive)
-    const { data: hotels, error: hErr } = await supabaseAdmin
+    // case-insensitive guest code
+    const { data: hotel } = await supabaseAdmin
       .from('hotels')
       .select('id, latitude, longitude, is_active')
       .ilike('guest_code', propertyCode.trim())
-      .limit(1);
-    const hotel = hotels?.[0];
-
-    if (hErr || !hotel || hotel.is_active === false) {
+      .maybeSingle();
+    if (!hotel || hotel.is_active === false) {
       return res.status(404).send('Hotel not found.');
     }
 
@@ -269,7 +243,6 @@ router.post('/request', async (req, res) => {
       finalRoomLabel = String(roomNumber).trim();
     } else {
       let spaceRow = null;
-
       if (spaceId) {
         const { data } = await supabaseAdmin
           .from('hotel_spaces')
@@ -298,15 +271,12 @@ router.post('/request', async (req, res) => {
           .maybeSingle();
         spaceRow = data;
       }
-
-      if (!spaceRow) {
-        return res.status(404).send('Space not found at this property.');
-      }
+      if (!spaceRow) return res.status(404).send('Space not found at this property.');
       finalRoomLabel = spaceRow.name;
       finalSpaceId = spaceRow.id;
     }
 
-    // Determine phone: prefer body, else app_accounts.phone
+    // Determine phone (body → profile fallback)
     let phone = '';
     if (from_phone) phone = toE164(from_phone);
     if (!phone) {
@@ -321,21 +291,18 @@ router.post('/request', async (req, res) => {
     const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: finalRoomLabel,
-      space_id: finalSpaceId, // optional
+      space_id: finalSpaceId,
       message: String(message).trim().slice(0, 240),
       department: department ?? null,
       priority: priority ?? null,
       source: 'app_guest',
-      from_phone: phone || '', // requests.from_phone NOT NULL
+      from_phone: phone || '', // NOT NULL in schema
       app_account_id: sess.app_account_id,
       lat,
       lng,
     });
 
-    // Fire-and-forget staff push
-    notifyStaffOnNewRequest(created).catch((e) =>
-      console.error('staff notify (app) failed', e)
-    );
+    notifyStaffOnNewRequest(created).catch((e) => console.error('staff notify (app) failed', e));
 
     return res.json({
       id: created.id,
@@ -350,7 +317,7 @@ router.post('/request', async (req, res) => {
 });
 
 /* ===========================================================
- * GET /app/requests  (unchanged)
+ * GET /app/requests
  * =========================================================== */
 router.get('/requests', async (req, res) => {
   try {
@@ -374,7 +341,7 @@ router.get('/requests', async (req, res) => {
 });
 
 /* ===========================================================
- * PATCH /app/requests/:id  (unchanged)
+ * PATCH /app/requests/:id
  * =========================================================== */
 router.patch('/requests/:id', async (req, res) => {
   try {
