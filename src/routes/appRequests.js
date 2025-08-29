@@ -1,12 +1,12 @@
 // api/AppRequests.js
 import { Router } from 'express';
 import { supabaseAdmin, insertRequest } from '../services/supabaseService.js';
-import { notifyStaffOnNewRequest } from '../services/notificationService.js'; // ⬅️ NEW
+import { notifyStaffOnNewRequest } from '../services/notificationService.js';
 
 const router = Router();
 const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
 
-/* ---------- session helpers ---------- */
+/* ---------------- session helpers ---------------- */
 async function getSession(token) {
   if (!token) return null;
   const { data, error } = await supabaseAdmin
@@ -19,14 +19,22 @@ async function getSession(token) {
   return data;
 }
 
-/* ---------- utils ---------- */
+/* ---------------- utils ---------------- */
 function toE164(v = '') {
   const d = String(v).replace(/\D/g, '');
   if (!d) return '';
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 }
 
-/* ---------- geo ---------- */
+// Normalize token so it passes your DB CHECK constraint:
+// staff_devices.expo_push_token LIKE 'ExponentPushToken%'
+function normalizeExpoToken(t) {
+  if (typeof t !== 'string') return '';
+  if (t.startsWith('ExpoPushToken[')) return t.replace('ExpoPushToken[', 'ExponentPushToken[');
+  return t;
+}
+
+/* ---------------- geo ---------------- */
 function milesBetween(lat1, lon1, lat2, lon2) {
   const R = 3958.7613;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -38,75 +46,105 @@ function milesBetween(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-/* ---------- routes ---------- */
-
-/**
+/* ===========================================================
  * POST /app/push/register
- *
- * Supports two modes:
- * 1) Guest app (X-App-Session header present) -> upsert into app_push_tokens
- * 2) Staff app (no session) -> body must include user_id + hotel_id -> upsert into staff_devices
- */
+ * 1) Guest app (X-App-Session header present) -> app_push_tokens
+ * 2) Staff app (no session) -> requires user_id + hotel_id -> staff_devices
+ *    (No DB changes required; we do a select-then-insert/update to dedupe.)
+ * =========================================================== */
 router.post('/push/register', async (req, res) => {
   try {
     const sessionToken = req.header('X-App-Session');
     const sess = await getSession(sessionToken).catch(() => null);
 
-    // accept either expoToken or expoPushToken from client
-    const expoToken = req.body?.expoPushToken || req.body?.expoToken;
+    const rawToken = req.body?.expoPushToken || req.body?.expoToken;
     const platform = req.body?.platform || null;
     const deviceDesc = req.body?.deviceDesc || null;
 
-    if (!expoToken || typeof expoToken !== 'string') {
+    if (!rawToken || typeof rawToken !== 'string') {
       return res.status(400).json({ error: 'expoToken / expoPushToken is required' });
     }
 
-    // Basic Expo token sanity check (supports both "ExponentPushToken[" and "ExpoPushToken[")
-    if (!/^ExponentPushToken\[|^ExpoPushToken\[/.test(expoToken)) {
-      return res.status(400).json({ error: 'Invalid Expo push token format' });
-    }
+    // Accept both ExpoPushToken[...] and ExponentPushToken[...], but
+    // require the latter when writing to staff_devices (DB CHECK).
+    const expoToken = normalizeExpoToken(rawToken);
 
     if (sess) {
-      // ── Mode A: Guest app token registration ───────────────────────────────
-      const { error } = await supabaseAdmin
+      // ---- Guest app token registration (app_push_tokens) ----
+      // Manual upsert (no UNIQUE needed): look up by (app_account_id, expo_token)
+      const { data: existing, error: findErr } = await supabaseAdmin
         .from('app_push_tokens')
-        .upsert(
-          {
+        .select('id')
+        .eq('app_account_id', sess.app_account_id)
+        .eq('expo_token', expoToken)
+        .maybeSingle();
+      if (findErr) throw findErr;
+
+      if (existing?.id) {
+        const { error: updErr } = await supabaseAdmin
+          .from('app_push_tokens')
+          .update({
+            platform,
+            device_desc: deviceDesc,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existing.id);
+        if (updErr) throw updErr;
+      } else {
+        const { error: insErr } = await supabaseAdmin
+          .from('app_push_tokens')
+          .insert({
             app_account_id: sess.app_account_id,
             expo_token: expoToken,
             platform,
             device_desc: deviceDesc,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'app_account_id,expo_token' }
-        );
-      if (error) throw error;
+          });
+        if (insErr) throw insErr;
+      }
+
       return res.json({ ok: true, mode: 'guest' });
     }
 
-    // ── Mode B: Staff app token registration (requires user_id + hotel_id) ───
+    // ---- Staff app token registration (staff_devices) ----
     const user_id = req.body?.user_id;
     const hotel_id = req.body?.hotel_id;
-
     if (!user_id || !hotel_id) {
       return res
         .status(401)
         .json({ error: 'Not signed in (guest) and missing user_id/hotel_id for staff registration' });
     }
 
-    const { error } = await supabaseAdmin
+    // Manual upsert by (user_id, expo_push_token)
+    const { data: existing, error: sFindErr } = await supabaseAdmin
       .from('staff_devices')
-      .upsert(
-        {
+      .select('id')
+      .eq('user_id', user_id)
+      .eq('expo_push_token', expoToken)
+      .maybeSingle();
+    if (sFindErr) throw sFindErr;
+
+    if (existing?.id) {
+      const { error: sUpdErr } = await supabaseAdmin
+        .from('staff_devices')
+        .update({
+          hotel_id,
+          platform,
+          last_seen_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id);
+      if (sUpdErr) throw sUpdErr;
+    } else {
+      const { error: sInsErr } = await supabaseAdmin
+        .from('staff_devices')
+        .insert({
           user_id,
           hotel_id,
           expo_push_token: expoToken,
           platform,
           last_seen_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id,expo_push_token' }
-      );
-    if (error) throw error;
+        });
+      if (sInsErr) throw sInsErr;
+    }
 
     return res.json({ ok: true, mode: 'staff' });
   } catch (e) {
@@ -115,41 +153,41 @@ router.post('/push/register', async (req, res) => {
   }
 });
 
-/**
+/* ===========================================================
  * GET /app/spaces
- * Query:
- *   propertyCode | code  -> hotels.guest_code
- *   hotel_id     (optional, overrides propertyCode)
+ * Query: propertyCode | code (guest_code), or hotel_id
+ * Optional search: q
  * Returns: { spaces: [{ id, name, slug }] }
- */
+ * (No reliance on a sort_order column.)
+ * =========================================================== */
 router.get('/spaces', async (req, res) => {
   try {
     const code = String(req.query.propertyCode || req.query.code || '').trim();
+    const q = String(req.query.q || '').trim();
     let hotel_id = req.query.hotel_id ? String(req.query.hotel_id).trim() : '';
 
     if (!hotel_id) {
       if (!code) return res.status(400).json({ error: 'propertyCode (or hotel_id) is required.' });
-
       const { data: hotel, error: hErr } = await supabaseAdmin
         .from('hotels')
         .select('id, is_active')
         .eq('guest_code', code)
         .single();
-
       if (hErr || !hotel || hotel.is_active === false) {
         return res.status(404).json({ error: 'Hotel not found.' });
       }
       hotel_id = hotel.id;
     }
 
-    const { data: spaces, error: sErr } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('hotel_spaces')
       .select('id, name, slug')
       .eq('hotel_id', hotel_id)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true })
-      .order('name', { ascending: true });
+      .eq('is_active', true);
 
+    if (q) query = query.ilike('name', `%${q}%`);
+
+    const { data: spaces, error: sErr } = await query.order('name', { ascending: true });
     if (sErr) throw sErr;
 
     return res.json({ spaces: spaces ?? [] });
@@ -158,22 +196,13 @@ router.get('/spaces', async (req, res) => {
   }
 });
 
-/**
+/* ===========================================================
  * POST /app/request
- * Body:
- * {
- *   propertyCode,              // required
- *   message,                   // required
- *   lat, lng,                  // required (geo-fenced)
- *   // Provide exactly ONE of the following:
- *   roomNumber,                // e.g. "204"
- *   spaceId,                   // UUID from hotel_spaces
- *   spaceSlug,                 // slug from hotel_spaces
- *   spaceName,                 // display name (we'll lookup)
- *   // Optional:
- *   from_phone, priority, department
- * }
- */
+ * Requires X-App-Session; geofences; supports room OR space
+ * Writes room label into requests.room_number and (if available)
+ * the space_id into requests.space_id. Ensures from_phone is
+ * NOT NULL by defaulting to '' if unknown (matches your schema).
+ * =========================================================== */
 router.post('/request', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
@@ -198,7 +227,6 @@ router.post('/request', async (req, res) => {
       return res.status(400).send('propertyCode and message are required.');
     }
 
-    // One-and-only-one: room OR space
     const roomProvided = !!(roomNumber && String(roomNumber).trim());
     const spaceProvided = !!(spaceId || spaceSlug || spaceName);
     if (!(roomProvided || spaceProvided)) {
@@ -208,12 +236,10 @@ router.post('/request', async (req, res) => {
       return res.status(400).send('Provide only one: roomNumber OR space (not both).');
     }
 
-    // Geo required
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).send('Location required.');
     }
 
-    // Find hotel by guest code
     const { data: hotel, error: hErr } = await supabaseAdmin
       .from('hotels')
       .select('id, latitude, longitude, is_active')
@@ -223,18 +249,18 @@ router.post('/request', async (req, res) => {
       return res.status(404).send('Hotel not found.');
     }
 
-    // Geofence check
     const dist = milesBetween(lat, lng, hotel.latitude, hotel.longitude);
     if (dist > DEFAULT_GEOFENCE_MILES) {
       return res.status(403).send('You must be on property to submit a request.');
     }
 
-    // Resolve room label (either numeric roomNumber or space display name)
+    // Resolve room/space
     let finalRoomLabel = '';
+    let finalSpaceId = null;
+
     if (roomProvided) {
       finalRoomLabel = String(roomNumber).trim();
     } else {
-      // Lookup the space for this hotel
       let spaceRow = null;
 
       if (spaceId) {
@@ -269,10 +295,11 @@ router.post('/request', async (req, res) => {
       if (!spaceRow) {
         return res.status(404).send('Space not found at this property.');
       }
-      finalRoomLabel = spaceRow.name; // store display name into requests.room_number
+      finalRoomLabel = spaceRow.name;
+      finalSpaceId = spaceRow.id;
     }
 
-    // Determine phone: prefer body, else profile
+    // Determine phone: prefer body, else app_accounts.phone
     let phone = '';
     if (from_phone) phone = toE164(from_phone);
     if (!phone) {
@@ -284,21 +311,21 @@ router.post('/request', async (req, res) => {
       if (acct?.phone) phone = toE164(acct.phone);
     }
 
-    // Create the request (AI will classify department/priority again server-side)
     const created = await insertRequest({
       hotel_id: hotel.id,
-      room_number: finalRoomLabel,            // <— shows in “Room” column
+      room_number: finalRoomLabel,
+      space_id: finalSpaceId, // optional, FK exists in your schema
       message: String(message).trim().slice(0, 240),
       department: department ?? null,
       priority: priority ?? null,
       source: 'app_guest',
-      from_phone: phone || null,
+      from_phone: phone || '', // NOT NULL per schema
       app_account_id: sess.app_account_id,
       lat,
       lng,
     });
 
-    // ⬇️ Trigger staff push (fire-and-forget to avoid latency)
+    // Fire-and-forget staff push
     notifyStaffOnNewRequest(created).catch((e) =>
       console.error('staff notify (app) failed', e)
     );
@@ -306,7 +333,7 @@ router.post('/request', async (req, res) => {
     return res.json({
       id: created.id,
       created_at: created.created_at,
-      room_number: created.room_number,       // return for client confirmation
+      room_number: created.room_number,
       department: created.department,
       priority: created.priority,
     });
@@ -315,7 +342,9 @@ router.post('/request', async (req, res) => {
   }
 });
 
-/** GET /app/requests (unchanged) */
+/* ===========================================================
+ * GET /app/requests  (unchanged)
+ * =========================================================== */
 router.get('/requests', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
@@ -324,7 +353,9 @@ router.get('/requests', async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('requests')
-      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number')
+      .select(
+        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number'
+      )
       .eq('app_account_id', sess.app_account_id)
       .order('created_at', { ascending: false });
 
@@ -335,7 +366,9 @@ router.get('/requests', async (req, res) => {
   }
 });
 
-/** PATCH /app/requests/:id (unchanged) */
+/* ===========================================================
+ * PATCH /app/requests/:id  (unchanged)
+ * =========================================================== */
 router.patch('/requests/:id', async (req, res) => {
   try {
     const token = req.header('X-App-Session');
@@ -375,7 +408,9 @@ router.patch('/requests/:id', async (req, res) => {
       .from('requests')
       .update(patch)
       .eq('id', id)
-      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number')
+      .select(
+        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number'
+      )
       .single();
     if (uErr) throw uErr;
 
