@@ -39,7 +39,7 @@ function milesBetween(lat1, lon1, lat2, lon2) {
   const R = 3958.7613;
   const toRad = (d) => (d * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
+  const dLon = toRad(lat2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
@@ -158,25 +158,29 @@ router.post('/push/register', async (req, res) => {
  * Query: propertyCode | code (guest_code), or hotel_id
  * Optional search: q
  * Returns: { spaces: [{ id, name, slug }] }
- * (No reliance on a sort_order column.)
+ *   - Case-insensitive hotel lookup
+ *   - Never 404s; returns [] if not found
  * =========================================================== */
 router.get('/spaces', async (req, res) => {
   try {
-    const code = String(req.query.propertyCode || req.query.code || '').trim();
-    const q = String(req.query.q || '').trim();
-    let hotel_id = req.query.hotel_id ? String(req.query.hotel_id).trim() : '';
+    const rawCode = String(req.query.propertyCode ?? req.query.code ?? '').trim();
+    const q = String(req.query.q ?? '').trim();
+    let hotel_id = String(req.query.hotel_id ?? req.query.hotelId ?? '').trim();
 
+    // Resolve hotel_id via guest_code if not provided
     if (!hotel_id) {
-      if (!code) return res.status(400).json({ error: 'propertyCode (or hotel_id) is required.' });
-      const { data: hotel, error: hErr } = await supabaseAdmin
+      if (!rawCode) return res.json({ spaces: [] }); // be forgiving
+
+      const { data: hotels, error: hErr } = await supabaseAdmin
         .from('hotels')
-        .select('id, is_active')
-        .eq('guest_code', code)
-        .single();
-      if (hErr || !hotel || hotel.is_active === false) {
-        return res.status(404).json({ error: 'Hotel not found.' });
+        .select('id, is_active, guest_code')
+        .ilike('guest_code', rawCode) // case-insensitive
+        .limit(1);
+
+      if (hErr || !hotels?.length || hotels[0].is_active === false) {
+        return res.json({ spaces: [] }); // never 404 the picker
       }
-      hotel_id = hotel.id;
+      hotel_id = hotels[0].id;
     }
 
     let query = supabaseAdmin
@@ -192,7 +196,8 @@ router.get('/spaces', async (req, res) => {
 
     return res.json({ spaces: spaces ?? [] });
   } catch (e) {
-    return res.status(500).json({ error: e.message || 'Could not fetch spaces' });
+    console.error('/app/spaces error', e);
+    return res.json({ spaces: [] }); // keep UI happy
   }
 });
 
@@ -200,8 +205,7 @@ router.get('/spaces', async (req, res) => {
  * POST /app/request
  * Requires X-App-Session; geofences; supports room OR space
  * Writes room label into requests.room_number and (if available)
- * the space_id into requests.space_id. Ensures from_phone is
- * NOT NULL by defaulting to '' if unknown (matches your schema).
+ * space_id into requests.space_id. Ensures from_phone is not null.
  * =========================================================== */
 router.post('/request', async (req, res) => {
   try {
@@ -240,11 +244,14 @@ router.post('/request', async (req, res) => {
       return res.status(400).send('Location required.');
     }
 
-    const { data: hotel, error: hErr } = await supabaseAdmin
+    // Hotel by guest_code (case-insensitive)
+    const { data: hotels, error: hErr } = await supabaseAdmin
       .from('hotels')
       .select('id, latitude, longitude, is_active')
-      .eq('guest_code', propertyCode.trim())
-      .single();
+      .ilike('guest_code', propertyCode.trim())
+      .limit(1);
+    const hotel = hotels?.[0];
+
     if (hErr || !hotel || hotel.is_active === false) {
       return res.status(404).send('Hotel not found.');
     }
@@ -314,12 +321,12 @@ router.post('/request', async (req, res) => {
     const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: finalRoomLabel,
-      space_id: finalSpaceId, // optional, FK exists in your schema
+      space_id: finalSpaceId, // optional
       message: String(message).trim().slice(0, 240),
       department: department ?? null,
       priority: priority ?? null,
       source: 'app_guest',
-      from_phone: phone || '', // NOT NULL per schema
+      from_phone: phone || '', // requests.from_phone NOT NULL
       app_account_id: sess.app_account_id,
       lat,
       lng,
