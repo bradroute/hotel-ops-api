@@ -1,6 +1,7 @@
 // api/AppRequests.js
 import { Router } from 'express';
 import { supabaseAdmin, insertRequest } from '../services/supabaseService.js';
+import { notifyStaffOnNewRequest } from '../services/notificationService.js'; // ⬅️ NEW
 
 const router = Router();
 const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
@@ -39,35 +40,78 @@ function milesBetween(lat1, lon1, lat2, lon2) {
 
 /* ---------- routes ---------- */
 
-// Push register unchanged
+/**
+ * POST /app/push/register
+ *
+ * Supports two modes:
+ * 1) Guest app (X-App-Session header present) -> upsert into app_push_tokens
+ * 2) Staff app (no session) -> body must include user_id + hotel_id -> upsert into staff_devices
+ */
 router.post('/push/register', async (req, res) => {
   try {
-    const token = req.header('X-App-Session');
-    const sess = await getSession(token);
-    if (!sess) return res.status(401).send('Not signed in.');
+    const sessionToken = req.header('X-App-Session');
+    const sess = await getSession(sessionToken).catch(() => null);
 
-    const { expoToken, platform, deviceDesc } = req.body || {};
+    // accept either expoToken or expoPushToken from client
+    const expoToken = req.body?.expoPushToken || req.body?.expoToken;
+    const platform = req.body?.platform || null;
+    const deviceDesc = req.body?.deviceDesc || null;
+
     if (!expoToken || typeof expoToken !== 'string') {
-      return res.status(400).send('expoToken required');
+      return res.status(400).json({ error: 'expoToken / expoPushToken is required' });
+    }
+
+    // Basic Expo token sanity check (supports both "ExponentPushToken[" and "ExpoPushToken[")
+    if (!/^ExponentPushToken\[|^ExpoPushToken\[/.test(expoToken)) {
+      return res.status(400).json({ error: 'Invalid Expo push token format' });
+    }
+
+    if (sess) {
+      // ── Mode A: Guest app token registration ───────────────────────────────
+      const { error } = await supabaseAdmin
+        .from('app_push_tokens')
+        .upsert(
+          {
+            app_account_id: sess.app_account_id,
+            expo_token: expoToken,
+            platform,
+            device_desc: deviceDesc,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'app_account_id,expo_token' }
+        );
+      if (error) throw error;
+      return res.json({ ok: true, mode: 'guest' });
+    }
+
+    // ── Mode B: Staff app token registration (requires user_id + hotel_id) ───
+    const user_id = req.body?.user_id;
+    const hotel_id = req.body?.hotel_id;
+
+    if (!user_id || !hotel_id) {
+      return res
+        .status(401)
+        .json({ error: 'Not signed in (guest) and missing user_id/hotel_id for staff registration' });
     }
 
     const { error } = await supabaseAdmin
-      .from('app_push_tokens')
+      .from('staff_devices')
       .upsert(
         {
-          app_account_id: sess.app_account_id,
-          expo_token: expoToken,
-          platform: platform || null,
-          device_desc: deviceDesc || null,
-          updated_at: new Date().toISOString(),
+          user_id,
+          hotel_id,
+          expo_push_token: expoToken,
+          platform,
+          last_seen_at: new Date().toISOString(),
         },
-        { onConflict: 'app_account_id,expo_token' }
+        { onConflict: 'user_id,expo_push_token' }
       );
-
     if (error) throw error;
-    return res.json({ ok: true });
+
+    return res.json({ ok: true, mode: 'staff' });
   } catch (e) {
-    return res.status(500).send(e.message || 'Could not register push token');
+    console.error('push/register error', e);
+    return res.status(500).json({ error: e.message || 'Could not register push token' });
   }
 });
 
@@ -210,6 +254,11 @@ router.post('/request', async (req, res) => {
       lat,
       lng,
     });
+
+    // ⬇️ Trigger staff push (fire-and-forget to avoid latency)
+    notifyStaffOnNewRequest(created).catch((e) =>
+      console.error('staff notify (app) failed', e)
+    );
 
     return res.json({
       id: created.id,

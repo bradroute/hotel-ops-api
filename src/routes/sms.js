@@ -9,6 +9,7 @@ import {
   acknowledgeRequestById,
   completeRequestById,
 } from '../services/requestActions.js';
+import { notifyStaffOnNewRequest } from '../services/notificationService.js'; // ⬅️ NEW
 
 const router = express.Router();
 
@@ -192,7 +193,7 @@ router.post('/', async (req, res) => {
     }
 
     // 11) Insert request
-    await insertRequest({
+    const created = await insertRequest({
       hotel_id,
       from_phone,
       message,
@@ -203,6 +204,11 @@ router.post('/', async (req, res) => {
       is_vip: isVip,
       telnyx_id: telnyxId,
     });
+
+    // 12) Notify staff (non-blocking)
+    notifyStaffOnNewRequest(created).catch((e) =>
+      console.error('staff notify (sms) failed', e)
+    );
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
   }
@@ -219,11 +225,8 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
-    // Send custom “we’re on it” acknowledgement SMS
-    await sendConfirmationSms(
-      updated.from_phone,
-      'Operon: Your request has been received and is being worked on.'
-    );
+    // ❗ Notifications: handled inside acknowledgeRequestById via notifyGuestOnStatus
+    // (Remove manual SMS here to avoid double messaging.)
 
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -231,7 +234,7 @@ router.patch('/:id/acknowledge', async (req, res, next) => {
   }
 });
 
-// Complete endpoint (no SMS)
+// Complete endpoint
 router.patch('/:id/complete', async (req, res, next) => {
   try {
     const id = req.params.id.trim();
@@ -239,6 +242,9 @@ router.patch('/:id/complete', async (req, res, next) => {
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
+
+    // ❗ Notifications: handled inside completeRequestById via notifyGuestOnStatus
+
     return res.status(200).json({ success: true, message: 'Request completed' });
   } catch (err) {
     next(err);
