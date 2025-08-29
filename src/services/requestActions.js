@@ -1,12 +1,10 @@
 // src/services/requestActions.js
 import { supabase } from './supabaseService.js';
-import { notifyGuestOnStatus } from './notificationService.js';
 
 /**
  * Mark a request acknowledged.
- * If hotelId is provided, scope the update to that property.
- * @param {string|number} id
- * @param {string|number} [hotelId]
+ * NOTE: This function NO LONGER sends guest notifications.
+ *       The caller (route) is responsible for calling notifyGuestOnStatus().
  */
 export async function acknowledgeRequestById(id, hotelId) {
   let q = supabase
@@ -19,23 +17,20 @@ export async function acknowledgeRequestById(id, hotelId) {
 
   if (hotelId) q = q.eq('hotel_id', hotelId);
 
-  const { data, error } = await q.select('*').maybeSingle();
-  if (error) throw new Error(error.message);
+  const { data, error } = await q
+    .select(
+      'id, hotel_id, app_account_id, from_phone, message, department, priority, acknowledged, acknowledged_at, completed, completed_at'
+    )
+    .maybeSingle();
 
-  // Fire guest notification (non-blocking)
-  if (data) {
-    notifyGuestOnStatus(data, 'acknowledged').catch((e) =>
-      console.error('notifyGuestOnStatus(ack) failed', e)
-    );
-  }
+  if (error) throw new Error(error.message);
   return data;
 }
 
 /**
  * Mark a request completed.
- * If hotelId is provided, scope the update to that property.
- * @param {string|number} id
- * @param {string|number} [hotelId]
+ * NOTE: This function NO LONGER sends guest notifications.
+ *       The caller (route) is responsible for calling notifyGuestOnStatus().
  */
 export async function completeRequestById(id, hotelId) {
   let q = supabase
@@ -48,14 +43,12 @@ export async function completeRequestById(id, hotelId) {
 
   if (hotelId) q = q.eq('hotel_id', hotelId);
 
-  const { data, error } = await q.select('*').maybeSingle();
-  if (error) throw new Error(error.message);
+  const { data, error } = await q
+    .select(
+      'id, hotel_id, app_account_id, from_phone, message, department, priority, acknowledged, acknowledged_at, completed, completed_at'
+    )
+    .maybeSingle();
 
-  // Fire guest notification (non-blocking)
-  if (data) {
-    notifyGuestOnStatus(data, 'completed').catch((e) =>
-      console.error('notifyGuestOnStatus(complete) failed', e)
-    );
-  }
+  if (error) throw new Error(error.message);
   return data;
 }

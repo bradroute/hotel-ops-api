@@ -1,9 +1,14 @@
+// src/routes/requests.js
 import express from 'express';
 import { supabase, insertRequest } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
-import { sendConfirmationSms } from '../services/telnyxService.js';
 import { classify } from '../services/classifier.js';
-import { sendExpoPush } from '../services/pushService.js';
+
+// ✅ Centralized notification entry points (we'll implement next)
+import {
+  notifyStaffOnNewRequest,
+  notifyGuestOnStatus,
+} from '../services/notificationService.js';
 
 const router = express.Router();
 
@@ -37,43 +42,6 @@ async function getEnabledDepartments(hotel_id) {
     console.warn('[getEnabledDepartments] fallback due to error:', e?.message || e);
   }
   return ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet'];
-}
-
-/** ─────────────────────────────────────────────────────────────
- * Notify the owning app account via Expo push
- * updatedRow must include: id, app_account_id, message, department, priority
- * event: 'ack' | 'complete'
- * ───────────────────────────────────────────────────────────── */
-async function notifyRequestOwner(updatedRow, event) {
-  try {
-    const appId = updatedRow?.app_account_id;
-    if (!appId) return; // non-app requests
-
-    const { data: toks, error } = await supabase
-      .from('app_push_tokens')
-      .select('expo_token')
-      .eq('app_account_id', appId);
-
-    if (error || !toks?.length) return;
-    const tokens = toks.map((t) => t.expo_token);
-
-    const title =
-      event === 'ack' ? 'Your request is in progress' : 'Your request is complete';
-    const body = updatedRow?.message || 'Thanks for using Operon.';
-
-    await sendExpoPush(tokens, {
-      title,
-      body,
-      data: {
-        request_id: updatedRow.id,
-        department: updatedRow.department,
-        priority: updatedRow.priority,
-        event,
-      },
-    });
-  } catch (err) {
-    console.error('[notifyRequestOwner] failed:', err);
-  }
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -190,12 +158,19 @@ router.post('/', async (req, res) => {
       message,
       department,
       priority,
-      room_number: room_number, // required
+      room_number, // required
       is_staff: staffData?.is_staff || false,
       is_vip: existingGuest?.is_vip || false,
       telnyx_id: null,
       source: source || 'app_guest',
     });
+
+    // ✅ Notify staff about the new request (push; SMS/email handled in service)
+    try {
+      await notifyStaffOnNewRequest(request);
+    } catch (e) {
+      console.warn('[notifyStaffOnNewRequest] failed:', e?.message || e);
+    }
 
     return res.status(201).json({ success: true, request });
   } catch (err) {
@@ -272,7 +247,7 @@ router.get('/', async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
- * Acknowledge / Complete (with push)
+ * Acknowledge / Complete (delegate guest notify to service)
  * ────────────────────────────────────────────────────────────── */
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
@@ -287,17 +262,9 @@ router.post('/:id/acknowledge', async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
-    try {
-      const smsResult = await sendConfirmationSms(
-        updated.from_phone,
-        'Operon: Your request has been received and is being worked on.'
-      );
-      console.log('📨 Confirmation SMS sent:', smsResult);
-    } catch (smsErr) {
-      console.error('❌ Confirmation SMS failed:', smsErr);
-    }
+    // ✅ One place handles guest messaging (push or SMS fallback)
+    await notifyGuestOnStatus(updated, 'acknowledged');
 
-    await notifyRequestOwner(updated, 'ack');
     return res.json({ success: true, updated });
   } catch (err) {
     next(err);
@@ -317,7 +284,9 @@ router.post('/:id/complete', async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
-    await notifyRequestOwner(updated, 'complete');
+    // ✅ One place handles guest messaging (push or SMS fallback)
+    await notifyGuestOnStatus(updated, 'completed');
+
     return res.json({ success: true, updated });
   } catch (err) {
     next(err);
