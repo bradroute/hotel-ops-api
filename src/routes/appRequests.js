@@ -116,6 +116,49 @@ router.post('/push/register', async (req, res) => {
 });
 
 /**
+ * GET /app/spaces
+ * Query:
+ *   propertyCode | code  -> hotels.guest_code
+ *   hotel_id     (optional, overrides propertyCode)
+ * Returns: { spaces: [{ id, name, slug }] }
+ */
+router.get('/spaces', async (req, res) => {
+  try {
+    const code = String(req.query.propertyCode || req.query.code || '').trim();
+    let hotel_id = req.query.hotel_id ? String(req.query.hotel_id).trim() : '';
+
+    if (!hotel_id) {
+      if (!code) return res.status(400).json({ error: 'propertyCode (or hotel_id) is required.' });
+
+      const { data: hotel, error: hErr } = await supabaseAdmin
+        .from('hotels')
+        .select('id, is_active')
+        .eq('guest_code', code)
+        .single();
+
+      if (hErr || !hotel || hotel.is_active === false) {
+        return res.status(404).json({ error: 'Hotel not found.' });
+      }
+      hotel_id = hotel.id;
+    }
+
+    const { data: spaces, error: sErr } = await supabaseAdmin
+      .from('hotel_spaces')
+      .select('id, name, slug')
+      .eq('hotel_id', hotel_id)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (sErr) throw sErr;
+
+    return res.json({ spaces: spaces ?? [] });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || 'Could not fetch spaces' });
+  }
+});
+
+/**
  * POST /app/request
  * Body:
  * {
