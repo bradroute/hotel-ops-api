@@ -1,5 +1,5 @@
 // src/services/notificationService.js
-import Expo from 'expo-server-sdk';                  // use default export (works in ESM)
+import { Expo } from 'expo-server-sdk';            // ⬅️ named import
 import { supabaseAdmin } from './supabaseService.js';
 import { sendConfirmationSms } from './telnyxService.js';
 
@@ -102,7 +102,6 @@ export async function notifyGuestOnStatus(
 
     const tokens = await guestTokens(appAccountId);
 
-    // Unified copy so you don't get two different wordings anywhere
     const smsAck = 'Operon: Your request has been received and is being worked on.';
     const smsDone = 'Operon: Your request has been completed.';
 
@@ -124,7 +123,7 @@ export async function notifyGuestOnStatus(
 
     // No app token? fall back to a single SMS
     if (phone) {
-      // 🔧 Fix: telnyx helper signature is (to, message)
+      // telnyx helper signature is (to, message)
       await sendConfirmationSms(phone, status === 'acknowledged' ? smsAck : smsDone);
     }
   } catch (e) {
