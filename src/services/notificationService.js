@@ -1,5 +1,5 @@
 // src/services/notificationService.js
-import { Expo } from 'expo-server-sdk';
+import Expo from 'expo-server-sdk';                  // use default export (works in ESM)
 import { supabaseAdmin } from './supabaseService.js';
 import { sendConfirmationSms } from './telnyxService.js';
 
@@ -7,17 +7,21 @@ const expo = new Expo();
 
 /* -------------------- helpers -------------------- */
 
+function uniqStrings(arr = []) {
+  return [...new Set((arr || []).filter(Boolean).map(String))];
+}
+
 async function sendPush(tokens = [], payload) {
-  if (!tokens?.length) return [];
-  const messages = tokens
-    .filter((t) => Expo.isExpoPushToken(t))
-    .map((t) => ({
-      to: t,
-      sound: 'default',
-      priority: 'high',
-      ttl: 300,
-      ...payload, // { title, body, data, categoryId? }
-    }));
+  const cleaned = uniqStrings(tokens).filter((t) => Expo.isExpoPushToken(t));
+  if (!cleaned.length) return [];
+
+  const messages = cleaned.map((t) => ({
+    to: t,
+    sound: 'default',
+    priority: 'high',
+    ttl: 300,
+    ...payload, // { title, body, data, categoryId? }
+  }));
 
   const tickets = [];
   for (const chunk of expo.chunkPushNotifications(messages)) {
@@ -42,10 +46,10 @@ async function staffTokens(hotel_id) {
     console.error('[staffTokens] error:', error);
     return [];
   }
-  return (data || []).map((r) => r.expo_push_token).filter(Boolean);
+  return uniqStrings((data || []).map((r) => r.expo_push_token));
 }
 
-// 🔁 Guests register here in the app via /app/push/register -> app_push_tokens
+// Guests register via /app/push/register -> app_push_tokens
 async function guestTokens(app_account_id) {
   if (!app_account_id) return [];
   const { data, error } = await supabaseAdmin
@@ -57,7 +61,7 @@ async function guestTokens(app_account_id) {
     console.error('[guestTokens] error:', error);
     return [];
   }
-  return (data || []).map((r) => r.expo_token).filter(Boolean);
+  return uniqStrings((data || []).map((r) => r.expo_token));
 }
 
 /* -------------------- public API -------------------- */
@@ -68,7 +72,6 @@ export async function notifyStaffOnNewRequest(requestRow) {
     const tokens = await staffTokens(requestRow.hotel_id);
     if (!tokens.length) return;
 
-    // Optional: show quick action buttons (ACK / DONE) in the app
     await sendPush(tokens, {
       title: `New ${requestRow.department || 'Service'} Request`,
       body: requestRow.message?.slice(0, 140) || 'Open to view details.',
@@ -99,16 +102,12 @@ export async function notifyGuestOnStatus(
 
     const tokens = await guestTokens(appAccountId);
 
-    // Use the exact wording we decided on, so you don't get two different versions
-    const smsAck =
-      'Operon: Your request has been received and is being worked on.';
+    // Unified copy so you don't get two different wordings anywhere
+    const smsAck = 'Operon: Your request has been received and is being worked on.';
     const smsDone = 'Operon: Your request has been completed.';
 
     const pushTitle = status === 'acknowledged' ? 'We’re on it' : 'Completed';
-    const pushBody =
-      status === 'acknowledged'
-        ? 'Your request has been received and is being worked on.'
-        : 'Your request has been completed.';
+    const pushBody = status === 'acknowledged' ? smsAck : smsDone;
 
     if (tokens.length) {
       await sendPush(tokens, {
@@ -125,7 +124,8 @@ export async function notifyGuestOnStatus(
 
     // No app token? fall back to a single SMS
     if (phone) {
-      await sendConfirmationSms(status === 'acknowledged' ? smsAck : smsDone, phone);
+      // 🔧 Fix: telnyx helper signature is (to, message)
+      await sendConfirmationSms(phone, status === 'acknowledged' ? smsAck : smsDone);
     }
   } catch (e) {
     console.error('[notifyGuestOnStatus] failed:', e);
