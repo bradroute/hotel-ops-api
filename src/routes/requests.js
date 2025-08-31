@@ -1,10 +1,8 @@
 // src/routes/requests.js
 import express from 'express';
-import { supabase, insertRequest } from '../services/supabaseService.js';
+import { supabaseAdmin as supabase, insertRequest } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { classify } from '../services/classifier.js';
-
-// ✅ Centralized notification entry points (we'll implement next)
 import {
   notifyStaffOnNewRequest,
   notifyGuestOnStatus,
@@ -44,10 +42,7 @@ async function getEnabledDepartments(hotel_id) {
   return ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet'];
 }
 
-/* ──────────────────────────────────────────────────────────────
- * Preview classification (uses the SAME classifier as create)
- * POST /requests/preview { hotel_id|propertyId, message }
- * ────────────────────────────────────────────────────────────── */
+/* ── Preview classification ─────────────────────────────────── */
 router.post('/preview', async (req, res) => {
   try {
     const { hotel_id: hotelIdBody, propertyId, message } = req.body || {};
@@ -62,7 +57,6 @@ router.post('/preview', async (req, res) => {
     let department = c?.department || 'Front Desk';
     let priority = c?.priority || 'normal';
 
-    // snap dept to enabled list
     const enabled = await getEnabledDepartments(hotel_id);
     if (enabled.length && !enabled.includes(department)) {
       department = enabled[0];
@@ -84,9 +78,7 @@ router.post('/preview', async (req, res) => {
   }
 });
 
-/* ──────────────────────────────────────────────────────────────
- * Create a New Guest/Staff Request
- * ────────────────────────────────────────────────────────────── */
+/* ── Create a New Guest/Staff Request ───────────────────────── */
 router.post('/', async (req, res) => {
   try {
     const {
@@ -127,7 +119,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // snap to enabled departments
+    // Snap to enabled departments + normalize priority
     const enabled = await getEnabledDepartments(hotel_id);
     if (enabled.length && !enabled.includes(department)) {
       department = enabled[0];
@@ -165,12 +157,10 @@ router.post('/', async (req, res) => {
       source: source || 'app_guest',
     });
 
-    // ✅ Notify staff about the new request (push; SMS/email handled in service)
-    try {
-      await notifyStaffOnNewRequest(request);
-    } catch (e) {
-      console.warn('[notifyStaffOnNewRequest] failed:', e?.message || e);
-    }
+    // Notify staff about the new request (push; SMS/email handled in service)
+    notifyStaffOnNewRequest(request).catch((e) =>
+      console.warn('[notifyStaffOnNewRequest] failed:', e?.message || e)
+    );
 
     return res.status(201).json({ success: true, request });
   } catch (err) {
@@ -179,11 +169,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-/* ──────────────────────────────────────────────────────────────
- * Get Requests (Scoped to hotel_id, optional phone filter)
- * Default: show_active_only=1 (hides cancelled/completed)
- * /requests?hotel_id=... [&phone=...][&show_active_only=0]
- * ────────────────────────────────────────────────────────────── */
+/* ── Get Requests ───────────────────────────────────────────── */
 router.get('/', async (req, res) => {
   try {
     const { hotel_id, phone, show_active_only } = req.query;
@@ -203,9 +189,7 @@ router.get('/', async (req, res) => {
       q = q.eq('cancelled', false).eq('completed', false);
     }
 
-    if (phone) {
-      q = q.eq('from_phone', String(phone));
-    }
+    if (phone) q = q.eq('from_phone', String(phone));
 
     const { data: requests, error: reqErr } = await q;
     if (reqErr) throw reqErr;
@@ -230,7 +214,7 @@ router.get('/', async (req, res) => {
       staff.filter((s) => s.is_staff).map((s) => [normalizePhone(s.phone), true])
     );
 
-    const enriched = requests.map((r) => {
+    const enriched = (requests || []).map((r) => {
       const normPhone = normalizePhone(r.from_phone);
       return {
         ...r,
@@ -246,24 +230,21 @@ router.get('/', async (req, res) => {
   }
 });
 
-/* ──────────────────────────────────────────────────────────────
- * Acknowledge / Complete (delegate guest notify to service)
- * ────────────────────────────────────────────────────────────── */
+/* ── Acknowledge / Complete ─────────────────────────────────── */
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
     const { hotel_id } = req.query;
-    if (!hotel_id) {
-      return res.status(400).json({ error: 'Missing hotel_id in query.' });
-    }
+    if (!hotel_id) return res.status(400).json({ error: 'Missing hotel_id in query.' });
 
-    const id = req.params.id.trim();
+    const id = parseInt(String(req.params.id).trim(), 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+
     const updated = await acknowledgeRequestById(id, hotel_id);
-    if (!updated) {
-      return res.status(404).json({ success: false, message: 'Request not found' });
-    }
+    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
-    // ✅ One place handles guest messaging (push or SMS fallback)
-    await notifyGuestOnStatus(updated, 'acknowledged');
+    notifyGuestOnStatus(updated, 'acknowledged').catch((e) =>
+      console.warn('[notifyGuestOnStatus ack] failed:', e?.message || e)
+    );
 
     return res.json({ success: true, updated });
   } catch (err) {
@@ -274,18 +255,17 @@ router.post('/:id/acknowledge', async (req, res, next) => {
 router.post('/:id/complete', async (req, res, next) => {
   try {
     const { hotel_id } = req.query;
-    if (!hotel_id) {
-      return res.status(400).json({ error: 'Missing hotel_id in query.' });
-    }
+    if (!hotel_id) return res.status(400).json({ error: 'Missing hotel_id in query.' });
 
-    const id = req.params.id.trim();
+    const id = parseInt(String(req.params.id).trim(), 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+
     const updated = await completeRequestById(id, hotel_id);
-    if (!updated) {
-      return res.status(404).json({ success: false, message: 'Request not found' });
-    }
+    if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
 
-    // ✅ One place handles guest messaging (push or SMS fallback)
-    await notifyGuestOnStatus(updated, 'completed');
+    notifyGuestOnStatus(updated, 'completed').catch((e) =>
+      console.warn('[notifyGuestOnStatus complete] failed:', e?.message || e)
+    );
 
     return res.json({ success: true, updated });
   } catch (err) {
@@ -293,19 +273,17 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-/* ──────────────────────────────────────────────────────────────
- * Notes
- * ────────────────────────────────────────────────────────────── */
+/* ── Notes ──────────────────────────────────────────────────── */
 router.get('/:id/notes', async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id.trim(), 10);
+    const id = parseInt(String(req.params.id).trim(), 10);
     const { data, error } = await supabase
       .from('notes')
       .select('*')
       .eq('request_id', id)
       .order('created_at', { ascending: true });
     if (error) throw error;
-    return res.json(data);
+    return res.json(data || []);
   } catch (err) {
     next(err);
   }
@@ -313,16 +291,17 @@ router.get('/:id/notes', async (req, res, next) => {
 
 router.post('/:id/notes', async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id.trim(), 10);
-    const { content } = req.body;
+    const id = parseInt(String(req.params.id).trim(), 10);
+    const { content } = req.body || {};
     if (!content) return res.status(400).json({ error: 'Note content is required.' });
 
     const { data, error } = await supabase
       .from('notes')
       .insert({ request_id: id, content, created_at: new Date().toISOString() })
-      .select();
+      .select()
+      .single();
     if (error) throw error;
-    return res.json({ success: true, note: data[0] });
+    return res.json({ success: true, note: data });
   } catch (err) {
     next(err);
   }
@@ -330,8 +309,8 @@ router.post('/:id/notes', async (req, res, next) => {
 
 router.delete('/:id/notes/:noteId', async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
-    const noteId = parseInt(req.params.noteId, 10);
+    const id = parseInt(String(req.params.id).trim(), 10);
+    const noteId = parseInt(String(req.params.noteId).trim(), 10);
     const { error } = await supabase
       .from('notes')
       .delete()

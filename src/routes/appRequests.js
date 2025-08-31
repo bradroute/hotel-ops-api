@@ -10,7 +10,7 @@ const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
 async function getSession(token) {
   if (!token) return null;
   const { data, error } = await supabaseAdmin
-    .from('app_auth_sessions')
+    .from('app_auth_sessions')           // ✅ auth session lookup
     .select('app_account_id, expires_at')
     .eq('token', token)
     .single();
@@ -48,31 +48,46 @@ function milesBetween(lat1, lon1, lat2, lon2) {
  * =========================================================== */
 router.post('/push/register', async (req, res) => {
   try {
-    const sessionToken = req.header('X-App-Session');
+    // ✅ accept multiple header styles (keeps old clients working)
+    const sessionToken =
+      req.header('X-App-Session') ||
+      req.header('X-App-Auth') ||
+      (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+
     const sess = await getSession(sessionToken).catch(() => null);
 
-    const rawToken = req.body?.expoPushToken || req.body?.expoToken;
-    const platform = req.body?.platform || null;
-    const deviceDesc = req.body?.deviceDesc || null;
+    // ✅ accept all common token/field spellings
+    const rawToken =
+      req.body?.expoPushToken ||
+      req.body?.expoToken ||
+      req.body?.expo_token;
+
+    const platform = req.body?.platform ?? null;
+    const deviceDesc = req.body?.deviceDesc ?? req.body?.device_desc ?? null;
 
     if (!rawToken || typeof rawToken !== 'string') {
-      return res.status(400).json({ error: 'expoToken / expoPushToken is required' });
+      return res.status(400).json({ error: 'expoPushToken/expoToken/expo_token is required' });
     }
     const expoToken = normalizeExpoToken(rawToken);
 
     if (sess) {
-      // Guest app → app_push_tokens (manual upsert)
+      // Guest app → app_push_tokens
+      // ✅ upsert by token (so relinking works if user logs out/in)
       const { data: existing } = await supabaseAdmin
         .from('app_push_tokens')
         .select('id')
-        .eq('app_account_id', sess.app_account_id)
         .eq('expo_token', expoToken)
         .maybeSingle();
 
       if (existing?.id) {
         const { error } = await supabaseAdmin
           .from('app_push_tokens')
-          .update({ platform, device_desc: deviceDesc, updated_at: new Date().toISOString() })
+          .update({
+            app_account_id: sess.app_account_id,  // relink if needed
+            platform,
+            device_desc: deviceDesc,
+            updated_at: new Date().toISOString(),
+          })
           .eq('id', existing.id);
         if (error) throw error;
       } else {
@@ -89,26 +104,31 @@ router.post('/push/register', async (req, res) => {
       return res.json({ ok: true, mode: 'guest' });
     }
 
-    // Staff app → staff_devices (manual upsert)
+    // Staff app → staff_devices
     const user_id = req.body?.user_id;
     const hotel_id = req.body?.hotel_id;
     if (!user_id || !hotel_id) {
-      return res
-        .status(401)
-        .json({ error: 'Not signed in (guest) and missing user_id/hotel_id for staff registration' });
+      return res.status(401).json({
+        error: 'Not signed in (guest) and missing user_id/hotel_id for staff registration',
+      });
     }
 
+    // ✅ upsert by token (avoid dup rows per user if they reinstall)
     const { data: sdExisting } = await supabaseAdmin
       .from('staff_devices')
       .select('id')
-      .eq('user_id', user_id)
       .eq('expo_push_token', expoToken)
       .maybeSingle();
 
     if (sdExisting?.id) {
       const { error } = await supabaseAdmin
         .from('staff_devices')
-        .update({ hotel_id, platform, last_seen_at: new Date().toISOString() })
+        .update({
+          user_id,
+          hotel_id,
+          platform,
+          last_seen_at: new Date().toISOString(),
+        })
         .eq('id', sdExisting.id);
       if (error) throw error;
     } else {
@@ -132,16 +152,11 @@ router.post('/push/register', async (req, res) => {
 });
 
 /* ===========================================================
- * GET /app/spaces  (+ legacy aliases)
- *   ?propertyCode= or ?code=  (case-insensitive match to hotels.guest_code)
- *   or ?hotel_id=
- *   optional ?q= to filter by name
- * Returns 200 with { spaces: [] } even if hotel unknown (no more 404 on route).
+ * GET /app/spaces (+ aliases)
  * =========================================================== */
 async function spacesHandler(req, res) {
   try {
-    const code =
-      String(req.query.propertyCode || req.query.code || '').trim();
+    const code = String(req.query.propertyCode || req.query.code || '').trim();
     const q = String(req.query.q || '').trim();
     let hotel_id = req.query.hotel_id ? String(req.query.hotel_id).trim() : '';
 
@@ -149,17 +164,14 @@ async function spacesHandler(req, res) {
       const { data: hotel, error: hErr } = await supabaseAdmin
         .from('hotels')
         .select('id, is_active')
-        .ilike('guest_code', code) // case-insensitive exact match
+        .ilike('guest_code', code)
         .maybeSingle();
       if (!hErr && hotel?.id && hotel.is_active !== false) {
         hotel_id = hotel.id;
       }
     }
 
-    if (!hotel_id) {
-      // Graceful: return empty list; caller shows "no spaces"
-      return res.json({ spaces: [] });
-    }
+    if (!hotel_id) return res.json({ spaces: [] });
 
     let query = supabaseAdmin
       .from('hotel_spaces')
@@ -178,15 +190,20 @@ async function spacesHandler(req, res) {
   }
 }
 router.get('/spaces', spacesHandler);
-router.get('/hotel-spaces', spacesHandler); // legacy alias
-router.get('/hotelSpaces', spacesHandler);  // legacy alias
+router.get('/hotel-spaces', spacesHandler);
+router.get('/hotelSpaces', spacesHandler);
+router.get('/spaces/by-code/:propertyCode', (req, res) => {
+  req.query.propertyCode = String(req.params.propertyCode || '').trim();
+  return spacesHandler(req, res);
+});
 
 /* ===========================================================
  * POST /app/request
  * =========================================================== */
 router.post('/request', async (req, res) => {
   try {
-    const token = req.header('X-App-Session');
+    const token = req.header('X-App-Session') || req.header('X-App-Auth') ||
+      (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     const sess = await getSession(token);
     if (!sess) return res.status(401).send('Not signed in.');
 
@@ -220,7 +237,6 @@ router.post('/request', async (req, res) => {
       return res.status(400).send('Location required.');
     }
 
-    // case-insensitive guest code
     const { data: hotel } = await supabaseAdmin
       .from('hotels')
       .select('id, latitude, longitude, is_active')
@@ -288,15 +304,16 @@ router.post('/request', async (req, res) => {
       if (acct?.phone) phone = toE164(acct.phone);
     }
 
+    // ✅ requests.department/priority are NOT NULL in schema → default them
     const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: finalRoomLabel,
       space_id: finalSpaceId,
       message: String(message).trim().slice(0, 240),
-      department: department ?? null,
-      priority: priority ?? null,
+      department: (department && String(department).trim()) || 'Front Desk',
+      priority: (priority && String(priority).trim()) || 'Normal',
       source: 'app_guest',
-      from_phone: phone || '', // NOT NULL in schema
+      from_phone: phone || '',
       app_account_id: sess.app_account_id,
       lat,
       lng,
@@ -321,7 +338,8 @@ router.post('/request', async (req, res) => {
  * =========================================================== */
 router.get('/requests', async (req, res) => {
   try {
-    const token = req.header('X-App-Session');
+    const token = req.header('X-App-Session') || req.header('X-App-Auth') ||
+      (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     const sess = await getSession(token);
     if (!sess) return res.status(401).send('Not signed in.');
 
@@ -345,7 +363,8 @@ router.get('/requests', async (req, res) => {
  * =========================================================== */
 router.patch('/requests/:id', async (req, res) => {
   try {
-    const token = req.header('X-App-Session');
+    const token = req.header('X-App-Session') || req.header('X-App-Auth') ||
+      (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     const sess = await getSession(token);
     if (!sess) return res.status(401).send('Not signed in.');
 

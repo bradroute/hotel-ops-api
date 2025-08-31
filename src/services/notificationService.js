@@ -1,9 +1,9 @@
 // src/services/notificationService.js
-import { Expo } from 'expo-server-sdk';            // ⬅️ named import
+import { Expo } from 'expo-server-sdk';
 import { supabaseAdmin } from './supabaseService.js';
 import { sendConfirmationSms } from './telnyxService.js';
 
-const expo = new Expo();
+const expo = new Expo(); // optional: new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN })
 
 /* -------------------- helpers -------------------- */
 
@@ -13,10 +13,14 @@ function uniqStrings(arr = []) {
 
 async function sendPush(tokens = [], payload) {
   const cleaned = uniqStrings(tokens).filter((t) => Expo.isExpoPushToken(t));
-  if (!cleaned.length) return [];
+  if (!cleaned.length) {
+    console.log('[push] no valid Expo tokens to send');
+    return [];
+  }
 
-  const messages = cleaned.map((t) => ({
-    to: t,
+  // Build messages (Expo recommends chunks of ~100)
+  const messages = cleaned.map((to) => ({
+    to,
     sound: 'default',
     priority: 'high',
     ttl: 300,
@@ -24,14 +28,18 @@ async function sendPush(tokens = [], payload) {
   }));
 
   const tickets = [];
-  for (const chunk of expo.chunkPushNotifications(messages)) {
+  const chunks = expo.chunkPushNotifications(messages);
+
+  for (const chunk of chunks) {
     try {
       const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
       tickets.push(...ticketChunk);
+      console.log('[push] expo ticket chunk:', JSON.stringify(ticketChunk).slice(0, 400));
     } catch (e) {
-      console.error('[expo] push chunk failed:', e);
+      console.error('[push] expo chunk failed:', e);
     }
   }
+
   return tickets;
 }
 
@@ -43,10 +51,12 @@ async function staffTokens(hotel_id) {
     .eq('hotel_id', hotel_id);
 
   if (error) {
-    console.error('[staffTokens] error:', error);
+    console.error('[push] staff token query error:', error);
     return [];
   }
-  return uniqStrings((data || []).map((r) => r.expo_push_token));
+  const tokens = uniqStrings((data || []).map((r) => r.expo_push_token));
+  console.log('[push] staff tokens fetched:', tokens.length, 'for hotel', hotel_id);
+  return tokens;
 }
 
 // Guests register via /app/push/register -> app_push_tokens
@@ -58,10 +68,12 @@ async function guestTokens(app_account_id) {
     .eq('app_account_id', app_account_id);
 
   if (error) {
-    console.error('[guestTokens] error:', error);
+    console.error('[push] guest token query error:', error);
     return [];
   }
-  return uniqStrings((data || []).map((r) => r.expo_token));
+  const tokens = uniqStrings((data || []).map((r) => r.expo_token));
+  console.log('[push] guest tokens fetched:', tokens.length, 'for app_account', app_account_id);
+  return tokens;
 }
 
 /* -------------------- public API -------------------- */
@@ -76,14 +88,16 @@ export async function notifyStaffOnNewRequest(requestRow) {
       title: `New ${requestRow.department || 'Service'} Request`,
       body: requestRow.message?.slice(0, 140) || 'Open to view details.',
       data: {
+        t: 'new_request',
         screen: 'RequestDetail',
         request_id: requestRow.id,
         hotel_id: requestRow.hotel_id,
       },
-      categoryId: 'REQUEST_CATEGORY', // matches app action buttons
+      // If you’ve registered this category on the client for action buttons:
+      categoryId: 'REQUEST_CATEGORY',
     });
   } catch (e) {
-    console.error('[notifyStaffOnNewRequest] failed:', e);
+    console.error('[push] notifyStaffOnNewRequest failed:', e);
   }
 }
 
@@ -92,13 +106,10 @@ export async function notifyStaffOnNewRequest(requestRow) {
  * - If the guest has app tokens: send a push
  * - Else (no tokens): send exactly one SMS
  */
-export async function notifyGuestOnStatus(
-  requestRow,
-  status /* 'acknowledged' | 'completed' */
-) {
+export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' | 'completed' */) {
   try {
-    const appAccountId = requestRow.app_account_id || requestRow.appAccountId || null;
-    const phone = requestRow.from_phone || requestRow.phone || null;
+    const appAccountId = requestRow.app_account_id ?? requestRow.appAccountId ?? null;
+    const phone = requestRow.from_phone ?? requestRow.phone ?? null;
 
     const tokens = await guestTokens(appAccountId);
 
@@ -113,20 +124,19 @@ export async function notifyGuestOnStatus(
         title: pushTitle,
         body: pushBody,
         data: {
+          t: status,
           screen: 'RequestDetail',
           request_id: requestRow.id,
-          event: status,
+          hotel_id: requestRow.hotel_id,
         },
       });
-      return; // ✅ do not also SMS
+      return; // do not also SMS
     }
 
-    // No app token? fall back to a single SMS
     if (phone) {
-      // telnyx helper signature is (to, message)
       await sendConfirmationSms(phone, status === 'acknowledged' ? smsAck : smsDone);
     }
   } catch (e) {
-    console.error('[notifyGuestOnStatus] failed:', e);
+    console.error('[push] notifyGuestOnStatus failed:', e);
   }
 }

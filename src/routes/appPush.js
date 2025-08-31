@@ -1,74 +1,108 @@
 // src/routes/appPush.js
-import { Router } from 'express';
+import express from 'express';
 import { supabaseAdmin } from '../services/supabaseService.js';
 
-const router = Router();
+const router = express.Router();
 
-async function getSession(token) {
-  if (!token) return null;
-  const { data, error } = await supabaseAdmin
-    .from('app_auth_sessions')
-    .select('app_account_id, expires_at')
-    .eq('token', token)
-    .maybeSingle();
-  if (error || !data) return null;
-  if (new Date(data.expires_at) < new Date()) return null;
-  return data;
-}
-
-// POST /app/push/register
+/**
+ * POST /app/push/register
+ * STAFF:  body { user_id, hotel_id, expoPushToken, platform, device_desc? }
+ * GUEST:  headers { 'X-App-Session': token } body { expoPushToken, platform, device_desc? }
+ */
 router.post('/register', async (req, res) => {
   try {
-    const token = req.header('X-App-Session');
-    const sess = await getSession(token);
-    if (!sess) return res.status(401).send('Not signed in.');
+    const sessionToken = req.header('X-App-Session');
+    const {
+      user_id,            // staff only
+      hotel_id,           // staff only
+      expoPushToken,      // preferred client key
+      expo_token,         // alt key (we also accept this)
+      platform,
+      device_desc = null,
+    } = req.body || {};
 
-    const { expoToken, platform, deviceLabel } = req.body || {};
-    if (!expoToken) return res.status(400).send('expoToken required.');
+    const token = expoPushToken || expo_token;
+    if (!token || !platform) {
+      return res.status(400).json({ ok: false, error: 'Missing token or platform' });
+    }
 
-    const { data, error } = await supabaseAdmin
-      .from('app_push_tokens')
-      .upsert(
-        {
-          app_account_id: sess.app_account_id,
-          expo_token: String(expoToken),
-          platform: platform || null,
-          device_label: deviceLabel || null,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'app_account_id,expo_token' }
-      )
-      .select()
-      .limit(1)
-      .single();
+    // ----- Guest path (App) -----
+    if (sessionToken) {
+      // validate session → get app_account_id
+      const { data: session, error: sErr } = await supabaseAdmin
+        .from('app_sessions')
+        .select('app_account_id, expires_at')
+        .eq('token', sessionToken)
+        .single();
 
-    if (error) throw error;
-    return res.json({ success: true, token: data?.expo_token });
+      if (sErr || !session) {
+        return res.status(401).json({ ok: false, error: 'Invalid app session' });
+      }
+
+      // upsert into app_push_tokens by expo_token
+      const { data: existing } = await supabaseAdmin
+        .from('app_push_tokens')
+        .select('id')
+        .eq('expo_token', token)
+        .maybeSingle();
+
+      if (existing?.id) {
+        await supabaseAdmin
+          .from('app_push_tokens')
+          .update({
+            app_account_id: session.app_account_id,
+            platform,
+            device_desc,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existing.id);
+      } else {
+        await supabaseAdmin.from('app_push_tokens').insert([{
+          app_account_id: session.app_account_id,
+          expo_token: token,
+          platform,
+          device_desc,
+        }]);
+      }
+
+      return res.json({ ok: true, scope: 'guest', app_account_id: session.app_account_id });
+    }
+
+    // ----- Staff path -----
+    if (!user_id || !hotel_id) {
+      return res.status(400).json({ ok: false, error: 'Missing user_id or hotel_id' });
+    }
+
+    // upsert into staff_devices by expo_push_token
+    const { data: existing } = await supabaseAdmin
+      .from('staff_devices')
+      .select('id')
+      .eq('expo_push_token', token)
+      .maybeSingle();
+
+    if (existing?.id) {
+      await supabaseAdmin
+        .from('staff_devices')
+        .update({
+          user_id,
+          hotel_id,
+          platform,
+          last_seen_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id);
+    } else {
+      await supabaseAdmin.from('staff_devices').insert([{
+        user_id,
+        hotel_id,
+        expo_push_token: token,
+        platform,
+      }]);
+    }
+
+    return res.json({ ok: true, scope: 'staff', user_id, hotel_id });
   } catch (e) {
-    return res.status(500).send(e.message || 'server_error');
-  }
-});
-
-// POST /app/push/unregister (optional)
-router.post('/unregister', async (req, res) => {
-  try {
-    const token = req.header('X-App-Session');
-    const sess = await getSession(token);
-    if (!sess) return res.status(401).send('Not signed in.');
-
-    const { expoToken } = req.body || {};
-    if (!expoToken) return res.status(400).send('expoToken required.');
-
-    const { error } = await supabaseAdmin
-      .from('app_push_tokens')
-      .delete()
-      .eq('app_account_id', sess.app_account_id)
-      .eq('expo_token', String(expoToken));
-
-    if (error) throw error;
-    return res.json({ success: true });
-  } catch (e) {
-    return res.status(500).send(e.message || 'server_error');
+    console.error('[appPush.register] error:', e);
+    return res.status(500).json({ ok: false, error: 'Server error' });
   }
 });
 
