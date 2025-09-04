@@ -203,6 +203,7 @@ router.post('/', async (req, res) => {
       is_staff: isStaff,
       is_vip: isVip,
       telnyx_id: telnyxId,
+      source: 'sms',
     });
 
     // 12) Notify staff (non-blocking)

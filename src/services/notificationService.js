@@ -3,7 +3,7 @@ import { Expo } from 'expo-server-sdk';
 import { supabaseAdmin } from './supabaseService.js';
 import { sendConfirmationSms } from './telnyxService.js';
 
-const expo = new Expo(); // optional: new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN })
+const expo = new Expo(); // or new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN })
 
 /* -------------------- helpers -------------------- */
 
@@ -102,24 +102,29 @@ export async function notifyStaffOnNewRequest(requestRow) {
 }
 
 /**
- * GUEST: status updates with single-channel delivery
- * - If the guest has app tokens: send a push
- * - Else (no tokens): send exactly one SMS
+ * GUEST: status updates with single-channel delivery determined by request.source
+ *  - 'app_guest' → push only (no SMS fallback, even if missing tokens)
+ *  - 'sms'       → SMS only
+ *  - others      → skip (no guest notification)
  */
 export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' | 'completed' */) {
   try {
+    const source = String(requestRow.source || '').toLowerCase();
     const appAccountId = requestRow.app_account_id ?? requestRow.appAccountId ?? null;
     const phone = requestRow.from_phone ?? requestRow.phone ?? null;
 
-    const tokens = await guestTokens(appAccountId);
-
     const smsAck = 'Operon: Your request has been received and is being worked on.';
     const smsDone = 'Operon: Your request has been completed.';
-
     const pushTitle = status === 'acknowledged' ? 'We’re on it' : 'Completed';
-    const pushBody = status === 'acknowledged' ? smsAck : smsDone;
+    const pushBody  = status === 'acknowledged' ? smsAck : smsDone;
 
-    if (tokens.length) {
+    if (source === 'app_guest') {
+      // Push only
+      const tokens = await guestTokens(appAccountId);
+      if (!tokens.length) {
+        console.log('[notifyGuestOnStatus] app_guest but no push tokens; skipping SMS by policy');
+        return;
+      }
       await sendPush(tokens, {
         title: pushTitle,
         body: pushBody,
@@ -130,12 +135,21 @@ export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' |
           hotel_id: requestRow.hotel_id,
         },
       });
-      return; // do not also SMS
+      return;
     }
 
-    if (phone) {
+    if (source === 'sms') {
+      // SMS only
+      if (!phone) {
+        console.log('[notifyGuestOnStatus] sms request but missing phone; cannot send SMS');
+        return;
+      }
       await sendConfirmationSms(phone, status === 'acknowledged' ? smsAck : smsDone);
+      return;
     }
+
+    // app_staff or anything else → no guest notification
+    console.log('[notifyGuestOnStatus] unsupported/guestless source:', source, '→ skipping');
   } catch (e) {
     console.error('[push] notifyGuestOnStatus failed:', e);
   }

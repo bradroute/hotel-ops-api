@@ -327,6 +327,7 @@ router.post('/request', async (req, res) => {
       room_number: created.room_number,
       department: created.department,
       priority: created.priority,
+      source: created.source, // ← include for accurate UI badge
     });
   } catch (e) {
     return res.status(500).send(e.message || 'Could not submit request');
@@ -346,7 +347,7 @@ router.get('/requests', async (req, res) => {
     const { data, error } = await supabaseAdmin
       .from('requests')
       .select(
-        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number'
+        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source'
       )
       .eq('app_account_id', sess.app_account_id)
       .order('created_at', { ascending: false });
@@ -402,7 +403,7 @@ router.patch('/requests/:id', async (req, res) => {
       .update(patch)
       .eq('id', id)
       .select(
-        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number'
+        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source'
       )
       .single();
     if (uErr) throw uErr;
