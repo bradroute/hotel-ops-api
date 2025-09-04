@@ -5,6 +5,18 @@ import { sendConfirmationSms } from './telnyxService.js';
 
 const expo = new Expo(); // or new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN })
 
+/* -------------------- in-memory de-dupe (5s window) -------------------- */
+const recentNotifies = new Map(); // key: `${request_id}:${status}` -> timestamp(ms)
+function shouldSkipNotify(key, windowMs = 5000) {
+  const now = Date.now();
+  const last = recentNotifies.get(key) || 0;
+  if (now - last < windowMs) return true;
+  recentNotifies.set(key, now);
+  // prune old entries opportunistically
+  for (const [k, t] of recentNotifies) if (now - t > windowMs * 10) recentNotifies.delete(k);
+  return false;
+}
+
 /* -------------------- helpers -------------------- */
 
 function uniqStrings(arr = []) {
@@ -106,9 +118,16 @@ export async function notifyStaffOnNewRequest(requestRow) {
  *  - 'app_guest' → push only (no SMS fallback, even if missing tokens)
  *  - 'sms'       → SMS only
  *  - others      → skip (no guest notification)
+ *  - plus a 5s de-dupe to prevent accidental double-sends
  */
 export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' | 'completed' */) {
   try {
+    const key = `${requestRow.id}:${status}`;
+    if (shouldSkipNotify(key)) {
+      console.log('[notifyGuestOnStatus] skipping duplicate within window:', key);
+      return;
+    }
+
     const source = String(requestRow.source || '').toLowerCase();
     const appAccountId = requestRow.app_account_id ?? requestRow.appAccountId ?? null;
     const phone = requestRow.from_phone ?? requestRow.phone ?? null;

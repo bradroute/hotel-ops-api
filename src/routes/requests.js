@@ -3,10 +3,7 @@ import express from 'express';
 import { supabaseAdmin as supabase, insertRequest } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { classify } from '../services/classifier.js';
-import {
-  notifyStaffOnNewRequest,
-  notifyGuestOnStatus,
-} from '../services/notificationService.js';
+import { notifyStaffOnNewRequest } from '../services/notificationService.js'; // staff-only
 
 const router = express.Router();
 
@@ -231,6 +228,7 @@ router.get('/', async (req, res) => {
 });
 
 /* ── Acknowledge / Complete ─────────────────────────────────── */
+/* NOTE: Guest notifications are handled inside requestActions. */
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
     const { hotel_id } = req.query;
@@ -241,10 +239,6 @@ router.post('/:id/acknowledge', async (req, res, next) => {
 
     const updated = await acknowledgeRequestById(id, hotel_id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
-
-    notifyGuestOnStatus(updated, 'acknowledged').catch((e) =>
-      console.warn('[notifyGuestOnStatus ack] failed:', e?.message || e)
-    );
 
     return res.json({ success: true, updated });
   } catch (err) {
@@ -262,10 +256,6 @@ router.post('/:id/complete', async (req, res, next) => {
 
     const updated = await completeRequestById(id, hotel_id);
     if (!updated) return res.status(404).json({ success: false, message: 'Request not found' });
-
-    notifyGuestOnStatus(updated, 'completed').catch((e) =>
-      console.warn('[notifyGuestOnStatus complete] failed:', e?.message || e)
-    );
 
     return res.json({ success: true, updated });
   } catch (err) {
