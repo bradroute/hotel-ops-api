@@ -127,7 +127,14 @@ export async function insertRequest({
   lat,
   lng,
 }) {
-  const estimated_revenue = estimateOrderRevenue(message);
+  
+  let estimated_revenue = 0;
+try {
+  estimated_revenue = estimateOrderRevenue(message);
+} catch (e) {
+  console.warn('⚠️ estimateOrderRevenue failed; defaulting to 0:', e?.message || e);
+  estimated_revenue = 0;
+}
 
   // ---- AI classification (only if missing) ----
   let aiDept = null, aiPrio = null, aiRoom = null;
