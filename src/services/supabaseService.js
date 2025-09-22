@@ -59,7 +59,7 @@ export async function getHotelSpaces(hotelId, { activeOnly = true } = {}) {
   if (!hotelId) return [];
   let q = supabase
     .from('hotel_spaces')
-    .select('id, name, category, is_active')
+    .select('id, name, slug, category, is_active') // ← include slug for classifier matching
     .eq('hotel_id', hotelId);
   if (activeOnly) q = q.eq('is_active', true);
   const { data, error } = await q.order('name', { ascending: true });
@@ -127,14 +127,14 @@ export async function insertRequest({
   lat,
   lng,
 }) {
-  
+  // Revenue estimation guard
   let estimated_revenue = 0;
-try {
-  estimated_revenue = estimateOrderRevenue(message);
-} catch (e) {
-  console.warn('⚠️ estimateOrderRevenue failed; defaulting to 0:', e?.message || e);
-  estimated_revenue = 0;
-}
+  try {
+    estimated_revenue = estimateOrderRevenue(message);
+  } catch (e) {
+    console.warn('⚠️ estimateOrderRevenue failed; defaulting to 0:', e?.message || e);
+    estimated_revenue = 0;
+  }
 
   // ---- AI classification (only if missing) ----
   let aiDept = null, aiPrio = null, aiRoom = null;
@@ -158,58 +158,64 @@ try {
     summary == null || root_cause == null || sentiment == null || needs_attention == null;
   if (needEnrich) {
     try {
-      enrichment = await enrichRequest(message);
+      const enr = await enrichRequest(message);
+      enrichment = (enr && typeof enr === 'object') ? enr : {};
     } catch (err) {
       console.error('❌ enrichRequest() failed:', err);
+      enrichment = {};
     }
   }
 
   // Normalize phone
   const phoneNorm = toE164(from_phone);
 
-  // Ensure guest exists or update last_seen
+  // Ensure guest exists or update last_seen (global unique by phone_number)
   if (phoneNorm) {
-  try {
-    const { data: existingGuest } = await supabase
-      .from('guests')
-      .select('id')
-      .eq('phone_number', phoneNorm)        // 🔁 match by unique column only
-      .maybeSingle();
-
-    if (!existingGuest) {
-      // Insert, but swallow unique-violation if someone else created it concurrently/elsewhere
-      const { error: gInsErr } = await supabase.from('guests').insert({
-        phone_number: phoneNorm,
-        is_vip: !!is_vip,
-        hotel_id,
-        last_seen: new Date().toISOString(),
-      });
-      if (gInsErr && String(gInsErr.code) !== '23505') throw gInsErr;
-    } else {
-      await supabase
+    try {
+      const { data: existingGuest } = await supabase
         .from('guests')
-        .update({ last_seen: new Date().toISOString() })
-        .eq('id', existingGuest.id);
-    }
-  } catch (e) {
-    console.warn('⚠️ guest upsert skipped (non-fatal):', e?.message || e);
-  }
-}
-  // Ensure staff number is tracked if applicable
-  if (is_staff && phoneNorm) {
-    const { data: existingStaff } = await supabase
-      .from('authorized_numbers')
-      .select('id')
-      .eq('phone', phoneNorm)
-      .eq('hotel_id', hotel_id)
-      .maybeSingle();
+        .select('id')
+        .eq('phone_number', phoneNorm)
+        .maybeSingle();
 
-    if (!existingStaff) {
-      await supabase.from('authorized_numbers').insert({
-        phone: phoneNorm,
-        is_staff: true,
-        hotel_id,
-      });
+      if (!existingGuest) {
+        const { error: gInsErr } = await supabase.from('guests').insert({
+          phone_number: phoneNorm,
+          is_vip: !!is_vip,
+          hotel_id,
+          last_seen: new Date().toISOString(),
+        });
+        if (gInsErr && String(gInsErr.code) !== '23505') throw gInsErr; // swallow dup
+      } else {
+        await supabase
+          .from('guests')
+          .update({ last_seen: new Date().toISOString() })
+          .eq('id', existingGuest.id);
+      }
+    } catch (e) {
+      console.warn('⚠️ guest upsert skipped (non-fatal):', e?.message || e);
+    }
+  }
+
+  // Ensure staff number is tracked if applicable (PK on phone → swallow dup)
+  if (is_staff && phoneNorm) {
+    try {
+      const { data: existingStaff } = await supabase
+        .from('authorized_numbers')
+        .select('phone')
+        .eq('phone', phoneNorm)
+        .maybeSingle();
+
+      if (!existingStaff) {
+        const { error: sErr } = await supabase.from('authorized_numbers').insert({
+          phone: phoneNorm,
+          is_staff: true,
+          hotel_id,
+        });
+        if (sErr && String(sErr.code) !== '23505') throw sErr;
+      }
+    } catch (e) {
+      console.warn('⚠️ staff number insert skipped (non-fatal):', e?.message || e);
     }
   }
 
@@ -243,14 +249,14 @@ try {
     // default source: if telnyx_id present → 'sms', else provided or 'app_guest'
     source: source || (telnyx_id ? 'sms' : 'app_guest'),
     app_account_id: app_account_id ?? null,
-    // AI enrichment with caller override
-    summary:        summary        ?? enrichment.summary        ?? null,
-    root_cause:     root_cause     ?? enrichment.root_cause     ?? null,
-    sentiment:      sentiment      ?? enrichment.sentiment      ?? null,
+    // AI enrichment with caller override (null-safe)
+    summary:        summary        ?? enrichment?.summary        ?? null,
+    root_cause:     root_cause     ?? enrichment?.root_cause     ?? null,
+    sentiment:      sentiment      ?? enrichment?.sentiment      ?? null,
     needs_attention:
       typeof needs_attention === 'boolean'
         ? needs_attention
-        : (enrichment.needs_attention ?? false),
+        : !!enrichment?.needs_attention,
     // optional context
     lat: typeof lat === 'number' ? lat : null,
     lng: typeof lng === 'number' ? lng : null,
@@ -536,7 +542,7 @@ export async function getServiceScoreTrend(startDate, endDate, hotelId) {
     const weekNum = Math.ceil(
       ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
     );
-      // simple score model
+    // simple score model
     const secs = r.acknowledged_at
       ? (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000
       : null;
@@ -795,10 +801,3 @@ export async function upsertSlaSettings(hotelId, slaMap) {
     .upsert(payload, { onConflict: 'hotel_id,department' });
   return { data, error };
 }
-
-// Suggested indexes (run once in Supabase SQL):
-// CREATE UNIQUE INDEX IF NOT EXISTS uniq_requests_telnyx_id
-//   ON public.requests (telnyx_id) WHERE telnyx_id IS NOT NULL;
-// CREATE INDEX IF NOT EXISTS idx_requests_hotel_created_at ON public.requests (hotel_id, created_at);
-// CREATE INDEX IF NOT EXISTS idx_requests_open_hotel ON public.requests (hotel_id) WHERE completed = false;
-// CREATE INDEX IF NOT EXISTS idx_guests_hotel_phone ON public.guests (hotel_id, phone_number);
