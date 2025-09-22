@@ -108,14 +108,79 @@ export const menuCatalog = {
   "dal forno romano": 200
 };
 
-// ── Simple substring-based revenue estimator ─────────────────────────────────
+// ── Light aliasing for common phrasing/plurals ──────────────────────────────
+const ALIASES = {
+  "caramelized brussel sprouts": ["caramelized brussels sprouts", "brussels sprouts", "brussel sprouts"],
+  "cinnamon roll ice cream sandwich": ["ice cream sandwich"],
+};
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function normalize(s = "") {
+  return s
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[^a-z0-9\s.]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function escapePhraseForRegex(phrase) {
+  // allow flexible whitespace between words
+  return phrase.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&').replace(/\s+/g, '\\s+');
+}
+function buildPattern(name) {
+  const variants = [name, ...(ALIASES[name] || [])];
+  const parts = variants.map(v => escapePhraseForRegex(v));
+  return new RegExp(`(?:^|\\b)(?:${parts.join('|')})(?:\\b|$)`, 'gi');
+}
+
+// ── Smarter revenue estimator (counts quantities; Wagyu per-oz) ─────────────
 export function estimateOrderRevenue(message) {
-  const text = message.toLowerCase();
+  const text = normalize(message || "");
+  if (!text) return 0;
+
   let total = 0;
+
   for (const [item, price] of Object.entries(menuCatalog)) {
-    if (text.includes(item)) {
-      total += price;
+    const pattern = buildPattern(item);
+
+    // Special handling: Wagyu priced per ounce
+    if (item === "wagyu beef") {
+      // e.g., "6oz wagyu beef", "10 ounces wagyu beef"
+      const wagyu = new RegExp(
+        String.raw`(?:^|\b)(\d{1,3})\s*(?:oz|ounce|ounces)\s*(?:of\s+)?(?:wagyu\s+beef)(?:\b|$)`,
+        'gi'
+      );
+      let m;
+      let matched = false;
+      while ((m = wagyu.exec(text)) !== null) {
+        matched = true;
+        const oz = parseInt(m[1], 10) || 1;
+        total += oz * price;
+      }
+      // fallback: if they said "wagyu beef" but no ounces, count as 1 oz
+      if (!matched) {
+        let k;
+        while ((k = pattern.exec(text)) !== null) {
+          total += price; // assume 1 oz if unspecified
+        }
+      }
+      continue;
+    }
+
+    // Generic items: optional leading quantity like "2 cheeseburgers" or "2x cheeseburger"
+    // We match quantities per occurrence to avoid double-counting across aliases.
+    const qtyPattern = new RegExp(
+      String.raw`(?:^|\b)(?:([1-9]\d?)\s*(?:x)?\s*)?(?:${buildPattern(item).source.slice(7, -4)})`,
+      'gi'
+    );
+
+    let m;
+    while ((m = qtyPattern.exec(text)) !== null) {
+      const qty = parseInt(m[1], 10) || 1;
+      total += qty * price;
     }
   }
+
   return total;
 }

@@ -1,31 +1,39 @@
 // src/services/telnyxService.js
-import fetch from 'node-fetch';
 import {
   telnyxApiKey,
-  telnyxNumber,
-  telnyxMessagingProfileId
+  telnyxNumber,               // fallback DID in E.164 (+1…)
+  telnyxMessagingProfileId,
+  apiBaseUrl,                 // e.g. https://hotel-ops-api-1.onrender.com
 } from '../config/index.js';
 
 const COMPLIANCE_FOOTER = ' Reply HELP for assistance or STOP to unsubscribe.';
+const MAX_LEN = 800; // keep SMS bodies sane
+
+const e164 = (n) => (n ? String(n).replace(/[^\d+]/g, '') : '');
+function assertPhone(n, label) {
+  const v = e164(n);
+  if (!v || !v.startsWith('+')) throw new Error(`${label} missing/invalid E.164`);
+  return v;
+}
 
 /**
- * Send a confirmation-style SMS (opt-in confirmation or acknowledgement).
- * @param {string|object} destinationNumber  Phone number string or object with phone_number.
- * @param {string} text                     The custom message body (before compliance footer).
+ * Low-level sender used by helpers.
+ * If apiBaseUrl is set, delivery receipts go to `${apiBaseUrl}/sms-status`.
  */
-export async function sendConfirmationSms(destinationNumber, text) {
-  const toNumber = typeof destinationNumber === 'string'
-    ? destinationNumber
-    : destinationNumber?.phone_number;
+async function sendSmsRaw({ to, text, from }) {
+  const toE164 = assertPhone(to, 'to');
+  const fromE164 = assertPhone(from || telnyxNumber, 'from');
+  const bodyText = String(text ?? '').trim().slice(0, MAX_LEN);
+  if (!bodyText) throw new Error('text body missing');
 
-  console.log('📨 telnyxService: sending confirmation to', toNumber);
-  console.log('    • body:', text);
-
-  const smsPayload = {
-    from: telnyxNumber,
-    to: toNumber,
-    text: `${text}${COMPLIANCE_FOOTER}`,
+  const payload = {
+    from: fromE164,
+    to: toE164,
+    text: bodyText,
     messaging_profile_id: telnyxMessagingProfileId,
+    ...(apiBaseUrl
+      ? { webhook_url: `${apiBaseUrl.replace(/\/+$/, '')}/sms-status` }
+      : {}),
   };
 
   const res = await fetch('https://api.telnyx.com/v2/messages', {
@@ -34,54 +42,53 @@ export async function sendConfirmationSms(destinationNumber, text) {
       Authorization: `Bearer ${telnyxApiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(smsPayload),
+    body: JSON.stringify(payload),
   });
 
-  const data = await res.json();
-  if (!res.ok) {
-    console.error('❌ Confirmation SMS error:', data);
-    throw Object.assign(new Error('Telnyx send failed'), { payload: data });
-  }
+  let data = null;
+  try { data = await res.json(); } catch { /* ignore */ }
 
-  console.log('✅ Confirmation SMS sent:', data);
+  if (!res.ok) {
+    console.error('❌ Telnyx send error', { status: res.status, data });
+    const err = new Error('Telnyx send failed');
+    err.payload = data;
+    throw err;
+  }
   return data;
 }
 
 /**
- * Send a rejection/“please activate” SMS with compliance footer.
- * @param {string|object} destinationNumber
- * @param {string} text
+ * Confirmation / acknowledgement
+ * @param {string|{phone_number:string}} destinationNumber
+ * @param {string} text - body before compliance footer
+ * @param {{from?: string}} [opts]
  */
-export async function sendRejectionSms(destinationNumber, text) {
-  const toNumber = typeof destinationNumber === 'string'
-    ? destinationNumber
-    : destinationNumber?.phone_number;
+export async function sendConfirmationSms(destinationNumber, text, opts = {}) {
+  const to =
+    typeof destinationNumber === 'string'
+      ? destinationNumber
+      : destinationNumber?.phone_number;
 
-  console.log('📨 telnyxService: sending rejection to', toNumber);
-  console.log('    • body:', text);
+  const payload = `${String(text ?? '').trim()}${COMPLIANCE_FOOTER}`;
+  const resp = await sendSmsRaw({ to, text: payload, from: opts.from });
+  console.log('✅ Confirmation SMS sent:', resp?.data?.id || resp?.id || '');
+  return resp;
+}
 
-  const smsPayload = {
-    from: telnyxNumber,
-    to: toNumber,
-    text: `${text}${COMPLIANCE_FOOTER}`,
-    messaging_profile_id: telnyxMessagingProfileId,
-  };
+/**
+ * Rejection / activation required
+ * @param {string|{phone_number:string}} destinationNumber
+ * @param {string} text
+ * @param {{from?: string}} [opts]
+ */
+export async function sendRejectionSms(destinationNumber, text, opts = {}) {
+  const to =
+    typeof destinationNumber === 'string'
+      ? destinationNumber
+      : destinationNumber?.phone_number;
 
-  const res = await fetch('https://api.telnyx.com/v2/messages', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${telnyxApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(smsPayload),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    console.error('❌ Rejection SMS error:', data);
-    throw Object.assign(new Error('Telnyx send failed'), { payload: data });
-  }
-
-  console.log('✅ Rejection SMS sent:', data);
-  return data;
+  const payload = `${String(text ?? '').trim()}${COMPLIANCE_FOOTER}`;
+  const resp = await sendSmsRaw({ to, text: payload, from: opts.from });
+  console.log('✅ Rejection SMS sent:', resp?.data?.id || resp?.id || '');
+  return resp;
 }

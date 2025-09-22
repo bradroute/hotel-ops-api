@@ -1,10 +1,19 @@
+// src/middleware/errorHandler.js
 export function errorHandler(err, req, res, next) {
-  console.error(err.stack);
-  if (err.payload) {
-    return res.status(500).json({
-      error: err.message,
-      details: err.payload,
-    });
+  const status = err.status || 500;
+
+  // Avoid double responses
+  if (res.headersSent) {
+    return next(err);
   }
-  res.status(500).json({ error: err.message || 'Internal Server Error' });
+
+  // Tag log with route and method
+  const route = `${req.method} ${req.originalUrl}`;
+  console.error(`[${route}]`, err.stack || err);
+
+  // Provide safe JSON
+  const body = { error: err.message || 'Internal Server Error' };
+  if (err.payload) body.details = err.payload;
+
+  res.status(status).json(body);
 }

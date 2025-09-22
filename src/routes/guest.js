@@ -22,6 +22,7 @@ function distanceMeters(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+// US-centric E.164 normalizer (adds +1 if no country code)
 function toE164(v = '') {
   const d = String(v).replace(/\D/g, '');
   if (!d) return '';
@@ -29,9 +30,13 @@ function toE164(v = '') {
 }
 
 function createGuestToken() {
-  // simple opaque token; swap to JWT later if needed
   return `gst_${randomUUID()}`;
 }
+
+const okDepts = (res, list) =>
+  res.status(200).json({
+    departments: Array.isArray(list) && list.length ? list : DEFAULT_DEPTS,
+  });
 
 /* ───────────────────────── routes ───────────────────────── */
 
@@ -39,7 +44,6 @@ router.get('/ping', (_req, res) => res.json({ pong: true }));
 
 /**
  * GET /guest/properties/:hotelId/departments
- * Returns enabled departments for the property.
  * Read order: department_settings.enabled=true → profiles.enabled_departments → hotels.departments_enabled → defaults
  * Always 200 with a list (fail-safe).
  */
@@ -47,11 +51,6 @@ router.get('/properties/:hotelId/departments', async (req, res) => {
   const { hotelId } = req.params;
   const supabaseAdmin = req.app?.locals?.supabaseAdmin; // service role
   const supabase = req.app?.locals?.supabase;           // anon/public
-
-  const ok = (list) =>
-    res.status(200).json({
-      departments: Array.isArray(list) && list.length ? list : DEFAULT_DEPTS,
-    });
 
   try {
     // 1) department_settings.enabled = true (admin)
@@ -63,7 +62,7 @@ router.get('/properties/:hotelId/departments', async (req, res) => {
         .eq('enabled', true);
 
       if (!depErr && depRows?.length) {
-        return ok(depRows.map((r) => r.department));
+        return okDepts(res, depRows.map((r) => r.department));
       }
       if (depErr) console.warn('[DEPTS] department_settings read failed:', depErr);
     } else {
@@ -79,7 +78,7 @@ router.get('/properties/:hotelId/departments', async (req, res) => {
         .maybeSingle();
 
       if (!profErr && Array.isArray(prof?.enabled_departments) && prof.enabled_departments.length) {
-        return ok(prof.enabled_departments);
+        return okDepts(res, prof.enabled_departments);
       }
       if (profErr) console.warn('[DEPTS] profiles fallback failed:', profErr);
     }
@@ -93,7 +92,7 @@ router.get('/properties/:hotelId/departments', async (req, res) => {
         .maybeSingle();
 
       if (!hotelErr && Array.isArray(hotel?.departments_enabled)) {
-        return ok(hotel.departments_enabled);
+        return okDepts(res, hotel.departments_enabled);
       }
       if (hotelErr) console.warn('[DEPTS] hotels fallback failed:', hotelErr);
     } else {
@@ -101,23 +100,18 @@ router.get('/properties/:hotelId/departments', async (req, res) => {
     }
 
     // 4) defaults
-    return ok(DEFAULT_DEPTS);
+    return okDepts(res, DEFAULT_DEPTS);
   } catch (err) {
     console.error('[DEPTS] unexpected error:', err);
-    return ok(DEFAULT_DEPTS);
+    return okDepts(res, DEFAULT_DEPTS);
   }
 });
 
 /**
  * POST /guest/start
  * Body: { name?, phone, propertyCode, lat, lng }
- *  - propertyCode must match hotels.guest_code
- * Returns:
- *  {
- *    authorized: boolean,
- *    hotel_id?, distance_m?, radius_m?, expires_at?, reason?,
- *    token?, popt?
- *  }
+ *  - propertyCode must match hotels.guest_code (case-insensitive)
+ * Writes with service-role client (RLS-safe).
  */
 router.post('/start', async (req, res) => {
   try {
@@ -131,16 +125,22 @@ router.post('/start', async (req, res) => {
 
     const e164 = toE164(phone);
     if (!e164) return res.status(400).json({ error: 'invalid_phone' });
-    if (!propertyCode?.trim()) return res.status(400).json({ error: 'missing_property_code' });
-    if (typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).json({ error: 'missing_coords' });
+
+    const code = String(propertyCode || '').trim();
+    if (!code) return res.status(400).json({ error: 'missing_property_code' });
+
+    // accept numeric strings for coords
+    const latNum = typeof lat === 'string' ? Number(lat) : lat;
+    const lngNum = typeof lng === 'string' ? Number(lng) : lng;
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      return res.status(400).json({ error: 'missing_or_invalid_coords' });
     }
 
-    // Lookup hotel by guest_code
+    // Lookup hotel by guest_code (case-insensitive)
     const { data: hotel, error: hErr } = await supabase
       .from('hotels')
       .select('id, guest_code, latitude, longitude, is_active')
-      .eq('guest_code', propertyCode.trim())
+      .ilike('guest_code', code)
       .maybeSingle();
 
     if (hErr) {
@@ -154,7 +154,7 @@ router.post('/start', async (req, res) => {
     // Geofence
     const radius = DEFAULT_GEOFENCE_METERS;
     const distance = distanceMeters(
-      { lat, lng },
+      { lat: latNum, lng: lngNum },
       { lat: Number(hotel.latitude), lng: Number(hotel.longitude) }
     );
     if (Number.isNaN(distance)) return res.status(400).json({ error: 'invalid_coords' });
@@ -168,23 +168,22 @@ router.post('/start', async (req, res) => {
       });
     }
 
-    // Authorize phone for 24h (phone is PK in authorized_numbers)
+    // Authorize phone for 24h (composite key phone+hotel_id recommended)
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const upsertRow = {
       phone: e164,
       hotel_id: hotel.id,
       is_staff: false,
       expires_at: expiresAt,
-      // room_number: null,
     };
 
-    const { error: aErr } = await supabase
+    // Use service-role for write; composite onConflict for multi-property phones
+    const { error: aErr } = await supabaseAdmin
       .from('authorized_numbers')
-      .upsert(upsertRow, { onConflict: 'phone' });
-
+      .upsert(upsertRow, { onConflict: 'phone,hotel_id' });
     if (aErr) console.error('[guest/start] authorized_numbers upsert error:', aErr);
 
-    // Create a guest session token
+    // Create a guest session token (service-role)
     const token = createGuestToken();
     const { error: sErr } = await supabaseAdmin
       .from('guest_sessions')
@@ -194,6 +193,7 @@ router.post('/start', async (req, res) => {
         room_number: null,
         phone_number: e164,
         expires_at: expiresAt,
+        name: name || null,
       }]);
 
     if (sErr) {

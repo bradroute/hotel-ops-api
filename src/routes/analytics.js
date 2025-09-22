@@ -1,33 +1,50 @@
-// src/routes/analytics.js — updated (Aug 21, 2025)
+// src/routes/analytics.js
 import express from 'express';
 import * as supabaseService from '../services/supabaseService.js';
 
 const router = express.Router();
 
+function isValidDate(d) {
+  return d instanceof Date && !Number.isNaN(d.getTime());
+}
+function endOfDayISO(input) {
+  const d = new Date(input);
+  d.setHours(23, 59, 59, 999);
+  return d.toISOString();
+}
+function intOrDefault(v, def) {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) ? n : def;
+}
+function clamp(n, min, max) {
+  return Math.min(Math.max(n, min), max);
+}
+
 router.get('/full', async (req, res) => {
   try {
-    // Read hotel_id from query string (underscore) to match front-end
     const { hotel_id: hotelId, startDate, endDate } = req.query;
     if (!hotelId || !startDate || !endDate) {
-      return res.status(400).json({ error: 'Missing required query params' });
+      return res.status(400).json({ error: 'Missing required query params: hotel_id, startDate, endDate' });
     }
 
-    // Optional timezone offset (minutes). Default ≈ America/Chicago (CDT = -300, CST = -360)
-    const tzOffsetMinutes = Number.parseInt(req.query.tzOffsetMinutes, 10);
-    const tzOffset = Number.isFinite(tzOffsetMinutes) ? tzOffsetMinutes : -300;
+    const startObj = new Date(startDate);
+    const endObj   = new Date(endDate);
+    if (!isValidDate(startObj) || !isValidDate(endObj)) {
+      return res.status(400).json({ error: 'Invalid date format for startDate or endDate' });
+    }
 
-    // Normalize date range to include full end day (inclusive → end of day)
-    const startISO = new Date(startDate).toISOString();
-    const endObj = new Date(endDate);
-    endObj.setHours(23, 59, 59, 999);
-    const endISO = endObj.toISOString();
+    // Timezone offset (minutes). Default ≈ America/Chicago (-300)
+    const tzOffset = clamp(intOrDefault(req.query.tzOffsetMinutes, -300), -720, 840);
 
-    // Optional tuning for common words (safe defaults)
-    const commonTopN = req.query.commonTopN ? Number(req.query.commonTopN) : 5;
-    const commonMinLen = req.query.commonMinLen ? Number(req.query.commonMinLen) : 3;
-    const commonMinCount = req.query.commonMinCount ? Number(req.query.commonMinCount) : 2;
+    // Inclusive end-of-day range
+    const startISO = startObj.toISOString();
+    const endISO   = endOfDayISO(endObj);
 
-    // Fetch all metrics in parallel (aligned with supabaseService.js merged file)
+    // Optional tuning for common words (safe + bounded)
+    const commonTopN     = clamp(intOrDefault(req.query.commonTopN, 5), 1, 25);
+    const commonMinLen   = clamp(intOrDefault(req.query.commonMinLen, 3), 2, 12);
+    const commonMinCount = clamp(intOrDefault(req.query.commonMinCount, 2), 1, 50);
+
     const [
       totalRequests,
       avgAckTime,
@@ -48,13 +65,13 @@ router.get('/full', async (req, res) => {
       dailyCompletionRate,
       weeklyCompletionRate,
       monthlyCompletionRate,
-      sentimentTrend,        // ← NEW
-      sentimentBreakdown     // ← NEW
+      sentimentTrend,
+      sentimentBreakdown,
     ] = await Promise.all([
       supabaseService.getTotalRequests(startISO, endISO, hotelId),
       supabaseService.getAvgAckTime(startISO, endISO, hotelId),
       supabaseService.getMissedSLACount(startISO, endISO, hotelId),
-      supabaseService.getRequestsByHour(startISO, endISO, hotelId, tzOffset), // ← replaced per-day with by-hour
+      supabaseService.getRequestsByHour(startISO, endISO, hotelId, tzOffset),
       supabaseService.getTopDepartments(startISO, endISO, hotelId),
       supabaseService.getCommonRequestWords(startISO, endISO, hotelId, {
         topN: commonTopN,
@@ -74,16 +91,15 @@ router.get('/full', async (req, res) => {
       supabaseService.getDailyCompletionRate(startISO, endISO, hotelId),
       supabaseService.getWeeklyCompletionRate(startISO, endISO, hotelId),
       supabaseService.getMonthlyCompletionRate(startISO, endISO, hotelId),
-      supabaseService.getSentimentTrend(startISO, endISO, hotelId, tzOffset),  // ← NEW
-      supabaseService.getSentimentBreakdown(startISO, endISO, hotelId),        // ← NEW
+      supabaseService.getSentimentTrend(startISO, endISO, hotelId, tzOffset),
+      supabaseService.getSentimentBreakdown(startISO, endISO, hotelId),
     ]);
 
-    // Send a single, clean payload
-    res.json({
+    return res.json({
       total: totalRequests,
       avgAck: avgAckTime,
       missedSLAs,
-      requestsByHour, // ← new key for the by-hour chart (0–23)
+      requestsByHour,
       topDepartments,
       commonWords,
       repeatPercent,
@@ -99,12 +115,12 @@ router.get('/full', async (req, res) => {
       dailyCompletionRate,
       weeklyCompletionRate,
       monthlyCompletionRate,
-      sentimentTrend,       // ← NEW
-      sentimentBreakdown,   // ← NEW
+      sentimentTrend,
+      sentimentBreakdown,
     });
   } catch (err) {
     console.error('🔥 Analytics API error:', err.stack || err);
-    res.status(500).json({ error: 'API Error: ' + (err.message || 'Unknown error') });
+    return res.status(500).json({ error: 'API Error: ' + (err.message || 'Unknown error') });
   }
 });
 

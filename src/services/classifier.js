@@ -4,20 +4,20 @@ import { openAIApiKey } from '../config/index.js';
 import {
   getEnabledDepartments,
   getHotelProfile,
-  getHotelSpaces, // <-- make sure this is exported in supabaseService.js
+  getHotelSpaces, // must be exported by supabaseService.js
 } from './supabaseService.js';
 
-const openai = new OpenAI({ apiKey: openAIApiKey });
+const openai = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null;
 
-/* ----------------------------------------------
-   Keyword override maps for each property type
------------------------------------------------*/
+/* ──────────────────────────────────────────────────────────────
+ * Keyword override maps (by property type)
+ * ──────────────────────────────────────────────────────────────*/
 const keywordMapByType = {
   hotel: [
     { keywords: ['wifi','wi-fi','internet','network'], department: 'IT' },
     { keywords: ['massage','spa','treatment'], department: 'Spa' },
     { keywords: ['bags','luggage','suitcase'], department: 'Bellhop' },
-    { keywords: ['towel','sheets','cleaning','housekeep'], department: 'Housekeeping' },
+    { keywords: ['towel','sheets','clean','housekeep'], department: 'Housekeeping' },
     { keywords: ['broken','leak','repair','fix','maintenance'], department: 'Maintenance' },
     { keywords: ['car','valet','parking'], department: 'Valet' },
     { keywords: ['recommend','recommendation','nearby','suggest'], department: 'Concierge' },
@@ -69,9 +69,9 @@ function overrideDepartment(text, enabledDepartments, propertyType) {
   return null;
 }
 
-/* ----------------------------------------------
-   Priority normalization + guardrails
------------------------------------------------*/
+/* ──────────────────────────────────────────────────────────────
+ * Priority normalization + heuristics
+ * ──────────────────────────────────────────────────────────────*/
 const PRIORITY_SYNONYMS = {
   low: 'low', minor: 'low', 'low-priority': 'low',
   normal: 'normal', medium: 'normal', routine: 'normal', standard: 'normal',
@@ -85,11 +85,11 @@ function normalizePriority(input) {
     if (/(urgent|critical|emergen|asap|immediate)/i.test(s)) return 'urgent';
     if (/(low|minor|no rush|whenever)/i.test(s)) return 'low';
   }
-  if (typeof input === 'number' && isFinite(input)) {
+  if (typeof input === 'number' && Number.isFinite(input)) {
     const n = input;
     if (n <= 1)       return n >= 0.75 ? 'urgent' : n <= 0.25 ? 'low' : 'normal'; // 0..1
     if (n <= 100)     return n >= 75   ? 'urgent' : n <= 25   ? 'low' : 'normal'; // 0..100
-                      return n >= 2    ? 'urgent' : n <= 0    ? 'low' : 'normal'; // ordinal 0/1/2
+                      return n >= 2    ? 'urgent' : n <= 0    ? 'low' : 'normal'; // ordinal
   }
   return undefined;
 }
@@ -106,12 +106,9 @@ function derivePriorityFromText(text = '') {
   return 'normal';
 }
 
-/* ----------------------------------------------
-   Room / Event Space extraction
-   - Prefer explicit room numbers (e.g., "room 204", "suite 12B")
-   - Else try to match named spaces from hotel_spaces
-   - Else return ''
------------------------------------------------*/
+/* ──────────────────────────────────────────────────────────────
+ * Room / Space extraction
+ * ──────────────────────────────────────────────────────────────*/
 const SPACE_SYNONYMS = [
   'lounge','the lounge',
   'lobby','the lobby',
@@ -134,72 +131,90 @@ function extractRoomOrSpace(text, hotelSpaces = []) {
   const msg = String(text || '');
   const lower = msg.toLowerCase();
 
-  // 1) Explicit room/suite patterns
-  // e.g., "room 204", "rm 12B", "suite 1501", "in room 7", "room# 134"
+  // room/suite patterns: "room 204", "rm 12B", "suite 1501", "in room 7"
   const roomMatch =
     lower.match(/\b(room|rm|suite)\s*#?\s*([a-z]?\d{1,5}[a-z]?)\b/i) ||
     lower.match(/\b(?:in|at)\s+(room|rm|suite)\s*#?\s*([a-z]?\d{1,5}[a-z]?)\b/i);
-  if (roomMatch && roomMatch[2]) {
-    return roomMatch[2].toUpperCase();
-  }
+  if (roomMatch?.[2]) return roomMatch[2].toUpperCase();
 
-  // 2) Try to match a named space from DB (by name or slug)
-  // hotelSpaces: [{ name, slug, category, is_active }]
+  // match named space from DB by name (slug optional if present)
   const candidates = [];
   for (const s of hotelSpaces || []) {
     if (s?.is_active === false) continue;
     const nameNorm = normalizeSpaceToken(s.name);
-    const slugNorm = normalizeSpaceToken(s.slug);
+    const slugNorm = normalizeSpaceToken(s.slug || '');
     if (!nameNorm && !slugNorm) continue;
-    candidates.push({
-      display: s.name?.trim() || s.slug?.trim() || '',
-      tokens: [nameNorm, slugNorm].filter(Boolean),
-    });
+    candidates.push({ display: s.name?.trim() || s.slug?.trim() || '', tokens: [nameNorm, slugNorm].filter(Boolean) });
   }
-
-  // include some generic synonyms for common spaces
   for (const syn of SPACE_SYNONYMS) {
-    candidates.push({ display: syn.replace(/^the\s+/,'').replace(/\b\w/g,c=>c.toUpperCase()), tokens: [normalizeSpaceToken(syn)] });
+    candidates.push({
+      display: syn.replace(/^the\s+/,'').replace(/\b\w/g, c => c.toUpperCase()),
+      tokens: [normalizeSpaceToken(syn)],
+    });
   }
 
   const lowerNorm = normalizeSpaceToken(lower);
   for (const c of candidates) {
-    if (!c.tokens?.length) continue;
-    if (c.tokens.some(t => t && lowerNorm.includes(t))) {
-      return c.display; // prefer DB display name (or cased synonym)
-    }
+    if (c.tokens.some(t => t && lowerNorm.includes(t))) return c.display;
   }
 
-  // 3) A softer generic catch (e.g., "in the lounge", "meeting in conference room")
   if (/\bconference( room)?\b/i.test(lower)) return 'Conference';
   if (/\blounge\b/i.test(lower)) return 'Lounge';
   if (/\blobby\b/i.test(lower)) return 'Lobby';
-
   return '';
 }
 
-/* ----------------------------------------------
-   DEPARTMENT & PRIORITY CLASSIFICATION
------------------------------------------------*/
+/* ──────────────────────────────────────────────────────────────
+ * OpenAI helpers (with timeout + safe JSON)
+ * ──────────────────────────────────────────────────────────────*/
+function safeParseJSON(s, fallback) {
+  try {
+    const match = String(s || '').match(/\{[\s\S]*\}/);
+    return JSON.parse(match ? match[0] : s);
+  } catch {
+    return fallback;
+  }
+}
+
+async function callOpenAIJSON(prompt, { timeoutMs = 2500 } = {}) {
+  if (!openai) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await openai.chat.completions.create(
+      {
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2,
+      },
+      { signal: controller.signal }
+    );
+    return res.choices?.[0]?.message?.content ?? null;
+  } catch (e) {
+    console.warn('[classifier] OpenAI call failed:', e?.message || e);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * Public: classify()
+ * ──────────────────────────────────────────────────────────────*/
 export async function classify(text, hotelId) {
   console.log('🟦 Classifying message:', text);
   console.log('🏨 Hotel ID:', hotelId);
 
-  // Hotel profile → property type
   const { data: hotel } = await getHotelProfile(hotelId);
   const propertyType = hotel?.type?.toLowerCase?.() || 'hotel';
-  console.log('📋 Property type:', propertyType);
 
-  // Enabled departments
   const enabled = await getEnabledDepartments(hotelId);
   if (!enabled?.length) {
     console.warn(`❌ No enabled departments for hotel ${hotelId}, defaulting.`);
-    // Never return null room_number
     return { department: 'Front Desk', priority: derivePriorityFromText(text), room_number: '' };
   }
-  console.log('✅ Enabled departments:', enabled);
 
-  // Load hotel spaces (for lounge/conference/etc detection)
+  // spaces for room/area detection
   let spaces = [];
   try {
     spaces = (await getHotelSpaces(hotelId)) || [];
@@ -208,23 +223,18 @@ export async function classify(text, hotelId) {
   }
   const extractedSpace = extractRoomOrSpace(text, spaces); // '' if not found
 
-  // 1) Fast keyword override for department
-  const forced = overrideDepartment(text, enabled, propertyType);
-  if (forced) {
-    console.log('🔁 Keyword override (department):', forced);
-    // Ask AI to estimate priority (fallback to heuristic)
-    let pr = 'normal';
+  // 1) fast keyword override
+  const forcedDept = overrideDepartment(text, enabled, propertyType);
+  if (forcedDept) {
+    let pr = derivePriorityFromText(text);
     try {
       const enr = await enrichRequest(text);
-      pr = normalizePriority(enr?.priority) || derivePriorityFromText(text);
-    } catch {
-      pr = derivePriorityFromText(text);
-    }
-    // Never pass null
-    return { department: forced, priority: pr, room_number: extractedSpace || '' };
+      pr = normalizePriority(enr?.priority) || pr;
+    } catch { /* noop, keep heuristic */ }
+    return { department: forcedDept, priority: pr, room_number: extractedSpace || '' };
   }
 
-  // 2) AI classify department + priority (we'll still prefer our extracted room/space)
+  // 2) model classification (JSON-only)
   const departmentList = enabled.map((d, i) => `${i + 1}. ${d}`).join('\n');
   const prompt = `You are a ${propertyType} task classifier.
 
@@ -232,28 +242,12 @@ Choose the single most appropriate department from the list below:
 ${departmentList}
 
 Respond ONLY with JSON:
-{ "department":"<one of above>", "priority":"high|normal|low", "room_number":"<if any or empty string>" }
+{ "department":"<one of above>", "priority":"urgent|normal|low", "room_number":"<if any or empty string>" }
 
 Message: "${text}"`;
 
-  const res = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.2,
-  });
-
-  const raw = res.choices?.[0]?.message?.content ?? '';
-  console.log('🔍 RAW OUTPUT:', raw);
-
-  // Safe JSON parse (strip code fences or extra text)
-  const match = raw.match(/\{[\s\S]*\}/);
-  let parsed;
-  try {
-    parsed = JSON.parse(match ? match[0] : raw);
-  } catch (e) {
-    console.error('❌ JSON parsing error:', e);
-    parsed = { department: 'Front Desk', priority: 'normal', room_number: '' };
-  }
+  const raw = await callOpenAIJSON(prompt);
+  const parsed = safeParseJSON(raw, { department: 'Front Desk', priority: 'normal', room_number: '' });
 
   // Validate department
   if (!enabled.includes(parsed.department)) {
@@ -261,35 +255,28 @@ Message: "${text}"`;
     parsed.department = 'Front Desk';
   }
 
-  // Normalize/guardrail priority
+  // Priority normalization + hint
   let priority =
     normalizePriority(parsed.priority) ??
     normalizePriority(parsed.urgency) ??
     'normal';
-
   if (priority === 'normal') {
-    // Only escalate/downgrade when model is neutral
     const hint = derivePriorityFromText(text);
     if (hint !== 'normal') priority = hint;
   }
 
-  // Never return null for room_number; prefer our extracted space
-  const rn = (typeof parsed.room_number === 'string' ? parsed.room_number.trim() : '') || '';
+  // Room/space final
+  const rn = typeof parsed.room_number === 'string' ? parsed.room_number.trim() : '';
   const finalRoom = (extractedSpace || rn || '').trim();
 
-  return {
-    department: parsed.department,
-    priority,
-    room_number: finalRoom, // '' if none
-  };
+  return { department: parsed.department, priority, room_number: finalRoom };
 }
 
-/* ----------------------------------------------
-   AI ENRICHMENT (used for AI priority on override)
------------------------------------------------*/
+/* ──────────────────────────────────────────────────────────────
+ * Public: enrichRequest()
+ * ──────────────────────────────────────────────────────────────*/
 export async function enrichRequest(text) {
-  const prompt = `
-You are an AI assistant for hotel operations.
+  const prompt = `You are an AI assistant for hotel operations.
 Extract the following from the guest request:
 - summary: 3-6 word actionable summary
 - root_cause: concise phrase (e.g., "HVAC not working")
@@ -306,32 +293,16 @@ Respond ONLY with JSON in this format:
   "needs_attention": false
 }
 
-Guest request: "${text}"
-`;
+Guest request: "${text}"`;
 
-  const res = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.2,
+  const raw = await callOpenAIJSON(prompt);
+  const parsed = safeParseJSON(raw, {
+    summary: null,
+    root_cause: null,
+    sentiment: null,
+    priority: null,
+    needs_attention: false,
   });
-
-  const raw = res.choices?.[0]?.message?.content ?? '';
-  console.log('🧠 Enrichment RAW OUTPUT:', raw);
-
-  const match = raw.match(/\{[\s\S]*\}/);
-  let parsed;
-  try {
-    parsed = JSON.parse(match ? match[0] : raw);
-  } catch (e) {
-    console.error('❌ Enrichment JSON parsing error:', e);
-    parsed = {
-      summary: null,
-      root_cause: null,
-      sentiment: null,
-      priority: null,
-      needs_attention: false,
-    };
-  }
 
   return parsed;
 }

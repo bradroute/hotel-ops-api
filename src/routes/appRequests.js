@@ -1,4 +1,4 @@
-// api/AppRequests.js
+// src/routes/appRequests.js
 import { Router } from 'express';
 import { supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 import { notifyStaffOnNewRequest } from '../services/notificationService.js';
@@ -10,10 +10,10 @@ const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
 async function getSession(token) {
   if (!token) return null;
   const { data, error } = await supabaseAdmin
-    .from('app_auth_sessions')           // ✅ auth session lookup
+    .from('app_auth_sessions')
     .select('app_account_id, expires_at')
     .eq('token', token)
-    .single();
+    .maybeSingle();
   if (error || !data) return null;
   if (new Date(data.expires_at) < new Date()) return null;
   return data;
@@ -48,7 +48,6 @@ function milesBetween(lat1, lon1, lat2, lon2) {
  * =========================================================== */
 router.post('/push/register', async (req, res) => {
   try {
-    // ✅ accept multiple header styles (keeps old clients working)
     const sessionToken =
       req.header('X-App-Session') ||
       req.header('X-App-Auth') ||
@@ -56,7 +55,6 @@ router.post('/push/register', async (req, res) => {
 
     const sess = await getSession(sessionToken).catch(() => null);
 
-    // ✅ accept all common token/field spellings
     const rawToken =
       req.body?.expoPushToken ||
       req.body?.expoToken ||
@@ -71,8 +69,6 @@ router.post('/push/register', async (req, res) => {
     const expoToken = normalizeExpoToken(rawToken);
 
     if (sess) {
-      // Guest app → app_push_tokens
-      // ✅ upsert by token (so relinking works if user logs out/in)
       const { data: existing } = await supabaseAdmin
         .from('app_push_tokens')
         .select('id')
@@ -83,7 +79,7 @@ router.post('/push/register', async (req, res) => {
         const { error } = await supabaseAdmin
           .from('app_push_tokens')
           .update({
-            app_account_id: sess.app_account_id,  // relink if needed
+            app_account_id: sess.app_account_id,
             platform,
             device_desc: deviceDesc,
             updated_at: new Date().toISOString(),
@@ -104,7 +100,6 @@ router.post('/push/register', async (req, res) => {
       return res.json({ ok: true, mode: 'guest' });
     }
 
-    // Staff app → staff_devices
     const user_id = req.body?.user_id;
     const hotel_id = req.body?.hotel_id;
     if (!user_id || !hotel_id) {
@@ -113,7 +108,6 @@ router.post('/push/register', async (req, res) => {
       });
     }
 
-    // ✅ upsert by token (avoid dup rows per user if they reinstall)
     const { data: sdExisting } = await supabaseAdmin
       .from('staff_devices')
       .select('id')
@@ -202,10 +196,12 @@ router.get('/spaces/by-code/:propertyCode', (req, res) => {
  * =========================================================== */
 router.post('/request', async (req, res) => {
   try {
-    const token = req.header('X-App-Session') || req.header('X-App-Auth') ||
+    const token =
+      req.header('X-App-Session') ||
+      req.header('X-App-Auth') ||
       (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     const sess = await getSession(token);
-    if (!sess) return res.status(401).send('Not signed in.');
+    if (!sess) return res.status(401).json({ error: 'Not signed in.' });
 
     const {
       propertyCode,
@@ -222,19 +218,19 @@ router.post('/request', async (req, res) => {
     } = req.body || {};
 
     if (!propertyCode?.trim() || !message?.trim()) {
-      return res.status(400).send('propertyCode and message are required.');
+      return res.status(400).json({ error: 'propertyCode and message are required.' });
     }
 
     const roomProvided = !!(roomNumber && String(roomNumber).trim());
     const spaceProvided = !!(spaceId || spaceSlug || spaceName);
     if (!(roomProvided || spaceProvided)) {
-      return res.status(400).send('Provide either roomNumber or a space (spaceId/spaceSlug/spaceName).');
+      return res.status(400).json({ error: 'Provide either roomNumber or a space (spaceId/spaceSlug/spaceName).' });
     }
     if (roomProvided && spaceProvided) {
-      return res.status(400).send('Provide only one: roomNumber OR space (not both).');
+      return res.status(400).json({ error: 'Provide only one: roomNumber OR space (not both).' });
     }
     if (typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).send('Location required.');
+      return res.status(400).json({ error: 'Location required.' });
     }
 
     const { data: hotel } = await supabaseAdmin
@@ -243,15 +239,14 @@ router.post('/request', async (req, res) => {
       .ilike('guest_code', propertyCode.trim())
       .maybeSingle();
     if (!hotel || hotel.is_active === false) {
-      return res.status(404).send('Hotel not found.');
+      return res.status(404).json({ error: 'Hotel not found.' });
     }
 
     const dist = milesBetween(lat, lng, hotel.latitude, hotel.longitude);
     if (dist > DEFAULT_GEOFENCE_MILES) {
-      return res.status(403).send('You must be on property to submit a request.');
+      return res.status(403).json({ error: 'You must be on property to submit a request.' });
     }
 
-    // Resolve room/space
     let finalRoomLabel = '';
     let finalSpaceId = null;
 
@@ -287,12 +282,11 @@ router.post('/request', async (req, res) => {
           .maybeSingle();
         spaceRow = data;
       }
-      if (!spaceRow) return res.status(404).send('Space not found at this property.');
+      if (!spaceRow) return res.status(404).json({ error: 'Space not found at this property.' });
       finalRoomLabel = spaceRow.name;
       finalSpaceId = spaceRow.id;
     }
 
-    // Determine phone (body → profile fallback)
     let phone = '';
     if (from_phone) phone = toE164(from_phone);
     if (!phone) {
@@ -300,18 +294,17 @@ router.post('/request', async (req, res) => {
         .from('app_accounts')
         .select('phone')
         .eq('id', sess.app_account_id)
-        .single();
+        .maybeSingle();
       if (acct?.phone) phone = toE164(acct.phone);
     }
 
-    // ✅ requests.department/priority are NOT NULL in schema → default them
     const created = await insertRequest({
       hotel_id: hotel.id,
       room_number: finalRoomLabel,
       space_id: finalSpaceId,
       message: String(message).trim().slice(0, 240),
       department: (department && String(department).trim()) || 'Front Desk',
-      priority: (priority && String(priority).trim()) || 'Normal',
+      priority: (priority && String(priority).trim().toLowerCase()) || 'normal',
       source: 'app_guest',
       from_phone: phone || '',
       app_account_id: sess.app_account_id,
@@ -327,10 +320,10 @@ router.post('/request', async (req, res) => {
       room_number: created.room_number,
       department: created.department,
       priority: created.priority,
-      source: created.source, // ← include for accurate UI badge
+      source: created.source,
     });
   } catch (e) {
-    return res.status(500).send(e.message || 'Could not submit request');
+    return res.status(500).json({ error: e.message || 'Could not submit request' });
   }
 });
 
@@ -339,23 +332,23 @@ router.post('/request', async (req, res) => {
  * =========================================================== */
 router.get('/requests', async (req, res) => {
   try {
-    const token = req.header('X-App-Session') || req.header('X-App-Auth') ||
+    const token =
+      req.header('X-App-Session') ||
+      req.header('X-App-Auth') ||
       (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     const sess = await getSession(token);
-    if (!sess) return res.status(401).send('Not signed in.');
+    if (!sess) return res.status(401).json({ error: 'Not signed in.' });
 
     const { data, error } = await supabaseAdmin
       .from('requests')
-      .select(
-        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source'
-      )
+      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source')
       .eq('app_account_id', sess.app_account_id)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
     return res.json({ requests: data || [] });
   } catch (e) {
-    return res.status(500).send(e.message || 'Could not fetch requests');
+    return res.status(500).json({ error: e.message || 'Could not fetch requests' });
   }
 });
 
@@ -364,23 +357,25 @@ router.get('/requests', async (req, res) => {
  * =========================================================== */
 router.patch('/requests/:id', async (req, res) => {
   try {
-    const token = req.header('X-App-Session') || req.header('X-App-Auth') ||
+    const token =
+      req.header('X-App-Session') ||
+      req.header('X-App-Auth') ||
       (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     const sess = await getSession(token);
-    if (!sess) return res.status(401).send('Not signed in.');
+    if (!sess) return res.status(401).json({ error: 'Not signed in.' });
 
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).send('Invalid id.');
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
 
     const { data: row, error: fErr } = await supabaseAdmin
       .from('requests')
       .select('id, app_account_id, acknowledged, completed, cancelled, message, priority')
       .eq('id', id)
-      .single();
+      .maybeSingle();
 
-    if (fErr || !row) return res.status(404).send('Request not found.');
-    if (row.app_account_id !== sess.app_account_id) return res.status(403).send('Forbidden.');
-    if (row.completed || row.cancelled) return res.status(400).send('Request can no longer be modified.');
+    if (fErr || !row) return res.status(404).json({ error: 'Request not found.' });
+    if (row.app_account_id !== sess.app_account_id) return res.status(403).json({ error: 'Forbidden.' });
+    if (row.completed || row.cancelled) return res.status(400).json({ error: 'Request can no longer be modified.' });
 
     const { message, priority, cancel } = req.body || {};
     const patch = {};
@@ -389,28 +384,26 @@ router.patch('/requests/:id', async (req, res) => {
       patch.cancelled = true;
     } else {
       if (typeof message === 'string') {
-        if (row.acknowledged) return res.status(400).send('Message cannot be edited after acknowledgement.');
-        if (!message.trim()) return res.status(400).send('Message cannot be empty.');
+        if (row.acknowledged) return res.status(400).json({ error: 'Message cannot be edited after acknowledgement.' });
+        if (!message.trim()) return res.status(400).json({ error: 'Message cannot be empty.' });
         patch.message = message.trim();
       }
-      if (typeof priority === 'string') patch.priority = priority.trim();
+      if (typeof priority === 'string') patch.priority = priority.trim().toLowerCase();
     }
 
-    if (Object.keys(patch).length === 0) return res.status(400).send('No changes provided.');
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'No changes provided.' });
 
     const { data: updated, error: uErr } = await supabaseAdmin
       .from('requests')
       .update(patch)
       .eq('id', id)
-      .select(
-        'id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source'
-      )
-      .single();
+      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source')
+      .maybeSingle();
     if (uErr) throw uErr;
 
     return res.json(updated);
   } catch (e) {
-    return res.status(500).send(e.message || 'Could not update request');
+    return res.status(500).json({ error: e.message || 'Could not update request' });
   }
 });
 

@@ -22,13 +22,52 @@ import appRequestsRouter from './routes/appRequests.js';
 const app = express();
 app.set('trust proxy', 1);
 
-// Basic CORS (safe defaults; widen if you need specific origins)
-app.use(cors());
+/* ───────────────────────────
+ * CORS (allowlist your frontend)
+ * ─────────────────────────── */
+const FRONTEND_ORIGIN =
+  process.env.FRONTEND_ORIGIN ||
+  process.env.REACT_APP_API_URL || // if this is your frontend origin, keep it
+  '';
 
-// JSON body parser
+const corsOptions = {
+  origin: (origin, cb) => {
+    // allow same-origin / server-to-server / tools (no Origin header)
+    if (!origin) return cb(null, true);
+
+    const allowlist = new Set([
+      FRONTEND_ORIGIN,
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3000',
+    ].filter(Boolean));
+
+    return allowlist.has(origin) ? cb(null, true) : cb(new Error('CORS: origin not allowed'));
+  },
+  credentials: true,
+};
+app.use(cors(corsOptions));
+
+/* ───────────────────────────
+ * Stripe webhook RAW body (must be BEFORE express.json)
+ * If your paymentsRouter exposes e.g. POST /api/stripe/webhook and uses req.rawBody,
+ * mount a raw parser specifically for that path here. Adjust the path if different.
+ * ─────────────────────────── */
+const STRIPE_WEBHOOK_PATH = process.env.STRIPE_WEBHOOK_PATH || '/api/stripe/webhook';
+app.post(STRIPE_WEBHOOK_PATH, express.raw({ type: 'application/json' }), (req, res, next) => {
+  // Let paymentsRouter handle it; this ensures body stays raw for signature verification.
+  next();
+});
+
+/* ───────────────────────────
+ * JSON body parser (safe size)
+ * ─────────────────────────── */
 app.use(express.json({ limit: '1mb' }));
 
-// Supabase: expose anon + admin on app.locals for any routers that read from it
+/* ───────────────────────────
+ * Supabase clients on app.locals
+ * ─────────────────────────── */
 const supabase = createClient(supabaseUrl, supabaseKey);                 // public anon key
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey); // service role key
 app.locals.supabase = supabase;
@@ -36,6 +75,8 @@ app.locals.supabaseAdmin = supabaseAdmin;
 
 /* ───────────────────────────
  * Payments (Stripe)
+ * NOTE: paymentsRouter should internally use `express.raw` ONLY on the webhook route.
+ * All other routes will see JSON due to the global parser above.
  * ─────────────────────────── */
 app.use('/api', paymentsRouter);
 
@@ -93,7 +134,11 @@ app.use('/rooms', roomsRouter);
 app.use(
   '/sms',
   (req, _res, next) => {
-    console.log('🔍 /sms payload:', JSON.stringify(req.body, null, 2));
+    // keep it light to avoid logging PII; trim long payloads
+    try {
+      const preview = JSON.stringify(req.body).slice(0, 500);
+      console.log('🔍 /sms payload:', preview);
+    } catch {}
     next();
   },
   rateLimit({ windowMs: 60_000, max: 10, message: 'Too many SMS calls.' }),

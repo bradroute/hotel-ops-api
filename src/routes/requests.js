@@ -1,42 +1,29 @@
 // src/routes/requests.js
 import express from 'express';
-import { supabaseAdmin as supabase, insertRequest } from '../services/supabaseService.js';
+import {
+  supabaseAdmin as supabase,
+  insertRequest,
+  getEnabledDepartments, // reuse instead of duplicating logic
+} from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { classify } from '../services/classifier.js';
 import { notifyStaffOnNewRequest } from '../services/notificationService.js'; // staff-only
 
 const router = express.Router();
 
-function normalizePhone(v) {
+/* ───────────────────────── helpers ───────────────────────── */
+function digits(v) {
   return String(v || '').replace(/\D/g, '');
 }
-
-// Enabled departments helper (department_settings → hotels.departments_enabled fallback)
-async function getEnabledDepartments(hotel_id) {
-  try {
-    const { data: ds, error: dsErr } = await supabase
-      .from('department_settings')
-      .select('department, enabled')
-      .eq('hotel_id', hotel_id);
-
-    if (!dsErr && ds?.length) {
-      const enabled = ds.filter((r) => r.enabled).map((r) => r.department);
-      if (enabled.length) return enabled;
-    }
-
-    const { data: hotel, error: hErr } = await supabase
-      .from('hotels')
-      .select('departments_enabled')
-      .eq('id', hotel_id)
-      .maybeSingle();
-
-    if (!hErr && Array.isArray(hotel?.departments_enabled)) {
-      return hotel.departments_enabled;
-    }
-  } catch (e) {
-    console.warn('[getEnabledDepartments] fallback due to error:', e?.message || e);
-  }
-  return ['Front Desk', 'Housekeeping', 'Maintenance', 'Room Service', 'Valet'];
+function toE164(v = '') {
+  const d = digits(v);
+  if (!d) return '';
+  return d.startsWith('1') ? `+${d}` : `+1${d}`;
+}
+function normalizePriority(p) {
+  const v = String(p || '').toLowerCase();
+  if (v === 'low' || v === 'normal' || v === 'urgent') return v;
+  return 'normal';
 }
 
 /* ── Preview classification ─────────────────────────────────── */
@@ -50,16 +37,17 @@ router.post('/preview', async (req, res) => {
         .json({ error: 'hotel_id/propertyId and message are required.' });
     }
 
-    const c = await classify(message, hotel_id);
-    let department = c?.department || 'Front Desk';
-    let priority = c?.priority || 'normal';
+    const c = await classify(message, hotel_id).catch((e) => {
+      console.warn('[preview] classify failed:', e?.message || e);
+      return null;
+    });
 
-    const enabled = await getEnabledDepartments(hotel_id);
+    let department = c?.department || 'Front Desk';
+    let priority = normalizePriority(c?.priority);
+
+    const enabled = await getEnabledDepartments(hotel_id).catch(() => []);
     if (enabled.length && !enabled.includes(department)) {
       department = enabled[0];
-    }
-    if (!['low', 'normal', 'urgent'].includes(String(priority))) {
-      priority = 'normal';
     }
 
     return res.json({
@@ -75,7 +63,10 @@ router.post('/preview', async (req, res) => {
   }
 });
 
-/* ── Create a New Guest/Staff Request ───────────────────────── */
+/* ── Create a New Guest/Staff Request ─────────────────────────
+   Accepts EITHER room_number OR space_id (not both).
+   If both provided → 400. If neither → 400.
+---------------------------------------------------------------- */
 router.post('/', async (req, res) => {
   try {
     const {
@@ -85,19 +76,51 @@ router.post('/', async (req, res) => {
       phone_number,
       from_phone,
       room_number,
+      space_id,         // NEW: allow space-based requests here too
       department: deptOverride,
       priority: prioOverride,
       source,
     } = req.body || {};
 
     const hotel_id = hotelIdBody || propertyId;
-    const phone = from_phone || phone_number;
+    const inputPhone = from_phone || phone_number;
 
-    if (!hotel_id || !message || !phone || !room_number) {
+    if (!hotel_id || !message || !inputPhone) {
       return res.status(400).json({
         error:
-          'Missing required fields (hotel_id/propertyId, message, from_phone/phone_number, room_number).',
+          'Missing required fields (hotel_id/propertyId, message, from_phone/phone_number).',
       });
+    }
+
+    // Must provide exactly one of room_number OR space_id
+    const hasRoom = !!(room_number && String(room_number).trim());
+    const hasSpace = !!space_id;
+    if (hasRoom === hasSpace) {
+      return res.status(400).json({
+        error: 'Provide exactly one of: room_number OR space_id.',
+      });
+    }
+
+    // Normalize phone up-front for all downstream usage
+    const phoneE164 = toE164(inputPhone);
+
+    // Validate space_id belongs to this hotel (if provided)
+    let finalSpaceId = null;
+    let finalRoomLabel = '';
+    if (hasSpace) {
+      const { data: spaceRow, error: spaceErr } = await supabase
+        .from('hotel_spaces')
+        .select('id, hotel_id, name, is_active')
+        .eq('id', space_id)
+        .eq('hotel_id', hotel_id)
+        .maybeSingle();
+      if (spaceErr || !spaceRow || spaceRow.is_active === false) {
+        return res.status(404).json({ error: 'Space not found at this property.' });
+      }
+      finalSpaceId = spaceRow.id;
+      finalRoomLabel = spaceRow.name; // label for UI while persisting space_id
+    } else {
+      finalRoomLabel = String(room_number).trim();
     }
 
     // Department/priority via overrides or classifier
@@ -117,19 +140,17 @@ router.post('/', async (req, res) => {
     }
 
     // Snap to enabled departments + normalize priority
-    const enabled = await getEnabledDepartments(hotel_id);
+    const enabled = await getEnabledDepartments(hotel_id).catch(() => []);
     if (enabled.length && !enabled.includes(department)) {
       department = enabled[0];
     }
-    if (!['low', 'normal', 'urgent'].includes(String(priority))) {
-      priority = 'normal';
-    }
+    priority = normalizePriority(priority);
 
     // Enrichment (guest VIP)
     const { data: existingGuest } = await supabase
       .from('guests')
       .select('is_vip')
-      .eq('phone_number', phone)
+      .eq('phone_number', phoneE164)   // use normalized phone
       .eq('hotel_id', hotel_id)
       .maybeSingle();
 
@@ -137,19 +158,20 @@ router.post('/', async (req, res) => {
     const { data: staffData } = await supabase
       .from('authorized_numbers')
       .select('is_staff')
-      .eq('phone', phone)
+      .eq('phone', phoneE164)          // use normalized phone
       .eq('hotel_id', hotel_id)
       .maybeSingle();
 
     const request = await insertRequest({
       hotel_id,
-      from_phone: phone,
-      message,
+      from_phone: phoneE164,
+      message: String(message).trim().slice(0, 240),
       department,
       priority,
-      room_number, // required
-      is_staff: staffData?.is_staff || false,
-      is_vip: existingGuest?.is_vip || false,
+      room_number: hasRoom ? finalRoomLabel : '', // if using space, pass empty; insertRequest will keep space_id
+      space_id: hasSpace ? finalSpaceId : null,
+      is_staff: !!staffData?.is_staff,
+      is_vip: !!existingGuest?.is_vip,
       telnyx_id: null,
       source: source || 'app_guest',
     });
@@ -159,7 +181,18 @@ router.post('/', async (req, res) => {
       console.warn('[notifyStaffOnNewRequest] failed:', e?.message || e)
     );
 
-    return res.status(201).json({ success: true, request });
+    return res.status(201).json({
+      success: true,
+      request: {
+        id: request.id,
+        created_at: request.created_at,
+        room_number: request.room_number,
+        space_id: request.space_id,
+        department: request.department,
+        priority: request.priority,
+        source: request.source,
+      },
+    });
   } catch (err) {
     console.error('❌ Failed to submit request:', err);
     return res.status(500).json({ error: err.message || 'Server error' });
@@ -186,12 +219,12 @@ router.get('/', async (req, res) => {
       q = q.eq('cancelled', false).eq('completed', false);
     }
 
-    if (phone) q = q.eq('from_phone', String(phone));
+    if (phone) q = q.eq('from_phone', toE164(phone));
 
     const { data: requests, error: reqErr } = await q;
     if (reqErr) throw reqErr;
 
-    // Enrichment
+    // Enrichment (VIP/staff flags)
     const { data: guests = [], error: guestErr } = await supabase
       .from('guests')
       .select('phone_number, is_vip')
@@ -205,14 +238,14 @@ router.get('/', async (req, res) => {
     if (staffErr) throw staffErr;
 
     const guestMap = Object.fromEntries(
-      guests.map((g) => [normalizePhone(g.phone_number), g])
+      (guests || []).map((g) => [digits(g.phone_number), g])
     );
     const staffMap = Object.fromEntries(
-      staff.filter((s) => s.is_staff).map((s) => [normalizePhone(s.phone), true])
+      (staff || []).filter((s) => s.is_staff).map((s) => [digits(s.phone), true])
     );
 
     const enriched = (requests || []).map((r) => {
-      const normPhone = normalizePhone(r.from_phone);
+      const normPhone = digits(r.from_phone);
       return {
         ...r,
         is_vip: r.is_vip || !!guestMap[normPhone]?.is_vip,

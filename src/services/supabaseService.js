@@ -1,4 +1,6 @@
-// src/services/supabaseService.js — fully updated (spaces-ready, classifier-safe) — Aug 21, 2025
+// src/services/supabaseService.js
+// Final — guarded AI calls, SMS/app source defaults, dup-safe insert, spaces support
+
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -11,7 +13,7 @@ if (typeof globalThis.WebSocket === 'undefined') {
 import { createClient } from '@supabase/supabase-js';
 import { supabaseUrl, supabaseKey, supabaseServiceRoleKey } from '../config/index.js';
 import { estimateOrderRevenue } from './menuCatalog.js';
-import { enrichRequest, classify } from './classifier.js'; // <- AI enrichment + AI classification
+import { enrichRequest, classify } from './classifier.js'; // AI enrichment + classification
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: { enabled: false },
@@ -55,7 +57,10 @@ export async function getHotelIdByCode(propertyCode) {
  */
 export async function getHotelSpaces(hotelId, { activeOnly = true } = {}) {
   if (!hotelId) return [];
-  let q = supabase.from('hotel_spaces').select('id, name, category, is_active').eq('hotel_id', hotelId);
+  let q = supabase
+    .from('hotel_spaces')
+    .select('id, name, category, is_active')
+    .eq('hotel_id', hotelId);
   if (activeOnly) q = q.eq('is_active', true);
   const { data, error } = await q.order('name', { ascending: true });
   if (error) throw new Error(error.message);
@@ -95,52 +100,61 @@ async function validateSpaceIdForHotel(space_id, hotel_id) {
   return data?.id ?? null;
 }
 
-/** ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
  * REQUESTS CRUD
- *  - AI decides department & priority via classify()
- *  - enrichRequest() adds summary/root_cause/sentiment/needs_attention
+ *  - AI decides department & priority when caller doesn’t provide them
+ *  - enrichRequest() only fills missing summary/root_cause/sentiment/needs_attention
  *  - persists source, app_account_id, from_phone
- *  - NEW: optional space_id (conference room / lounge, etc.)
+ *  - optional space_id
  */
 export async function insertRequest({
   hotel_id,
   from_phone,
   message,
-  department,      // optional (AI will override if possible)
-  priority,        // optional (AI will override if possible)
+  department,      // optional (AI fills if missing)
+  priority,        // optional (AI fills if missing)
   room_number,
-  space_id,        // ← NEW
+  space_id,
   telnyx_id,
   is_staff,
   is_vip,
-  source = 'app_guest', // default so DB doesn't fall back to 'sms'
+  source = undefined, // resolved below; defaults to 'sms' when telnyx_id present
   summary,
   root_cause,
   sentiment,
   needs_attention,
-  app_account_id,  // persist the app account that created the request
+  app_account_id,
   lat,
   lng,
 }) {
   const estimated_revenue = estimateOrderRevenue(message);
 
-  // ---- AI classification (source of truth for dept/priority) ----
+  // ---- AI classification (only if missing) ----
   let aiDept = null, aiPrio = null, aiRoom = null;
-  try {
-    const cls = await classify(message, hotel_id);
-    aiDept = cls?.department || null;
-    aiPrio = cls?.priority || null;
-    aiRoom = cls?.room_number || null;
-  } catch (err) {
-    console.error('❌ classify() failed:', err);
+  const needDept = !department;
+  const needPrio = !priority;
+  const needRoom = !room_number;
+  if (needDept || needPrio || needRoom) {
+    try {
+      const cls = await classify(message, hotel_id);
+      aiDept = needDept ? (cls?.department || null) : null;
+      aiPrio = needPrio ? (cls?.priority || null)   : null;
+      aiRoom = needRoom ? (cls?.room_number || null): null;
+    } catch (err) {
+      console.error('❌ classify() failed:', err);
+    }
   }
 
-  // ---- AI enrichment (summary, sentiment, etc.) ----
+  // ---- AI enrichment (only if any enrichment value missing) ----
   let enrichment = {};
-  try {
-    enrichment = await enrichRequest(message);
-  } catch (err) {
-    console.error('❌ enrichRequest() failed:', err);
+  const needEnrich =
+    summary == null || root_cause == null || sentiment == null || needs_attention == null;
+  if (needEnrich) {
+    try {
+      enrichment = await enrichRequest(message);
+    } catch (err) {
+      console.error('❌ enrichRequest() failed:', err);
+    }
   }
 
   // Normalize phone
@@ -191,16 +205,16 @@ export async function insertRequest({
   // Validate space_id (must belong to same hotel)
   const finalSpaceId = await validateSpaceIdForHotel(space_id, hotel_id);
 
-  // Final values (prefer AI → provided → defaults)
-  const finalDepartment = aiDept || department || 'Front Desk';
-  const finalPriority   = aiPrio || priority || 'normal';
+  // Final values (prefer provided → AI → defaults)
+  const finalDepartment = department || aiDept || 'Front Desk';
+  const finalPriority   = (priority || aiPrio || 'normal').toLowerCase();
 
-  // If a space is provided, we null room_number to honor "one-of" semantics.
-   const normalizeRoom = (v) =>
+  // Room number normalization
+  const normalizeRoom = (v) =>
     typeof v === 'string' ? v.trim() : (v == null ? '' : String(v));
-   const providedRoom = normalizeRoom(room_number);
-   const aiRoomNorm   = normalizeRoom(aiRoom);
-   const finalRoom    = providedRoom !== '' ? providedRoom : aiRoomNorm; // may be ''
+  const providedRoom = normalizeRoom(room_number);
+  const aiRoomNorm   = normalizeRoom(aiRoom);
+  const finalRoom    = providedRoom !== '' ? providedRoom : aiRoomNorm; // may be ''
 
   // Build payload and insert
   const payload = {
@@ -208,19 +222,20 @@ export async function insertRequest({
     from_phone: phoneNorm,
     message,
     department: finalDepartment,
-    priority: finalPriority,
+    priority: finalPriority,      // normalized lowercase
     room_number: finalRoom,
-    space_id: finalSpaceId ?? null,  // ← NEW
+    space_id: finalSpaceId ?? null,
     telnyx_id: telnyx_id ?? null,
     estimated_revenue,
     is_staff: !!is_staff,
     is_vip: !!is_vip,
-    source: source || 'app_guest',
+    // default source: if telnyx_id present → 'sms', else provided or 'app_guest'
+    source: source || (telnyx_id ? 'sms' : 'app_guest'),
     app_account_id: app_account_id ?? null,
-    // AI enrichment details
-    summary: summary ?? enrichment.summary ?? null,
-    root_cause: root_cause ?? enrichment.root_cause ?? null,
-    sentiment: sentiment ?? enrichment.sentiment ?? null,
+    // AI enrichment with caller override
+    summary:        summary        ?? enrichment.summary        ?? null,
+    root_cause:     root_cause     ?? enrichment.root_cause     ?? null,
+    sentiment:      sentiment      ?? enrichment.sentiment      ?? null,
     needs_attention:
       typeof needs_attention === 'boolean'
         ? needs_attention
@@ -230,20 +245,34 @@ export async function insertRequest({
     lng: typeof lng === 'number' ? lng : null,
   };
 
-  const { data, error } = await supabase
-    .from('requests')
-    .insert([payload])
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('requests')
+      .insert([payload])
+      .select('*')
+      .single();
 
-  if (error) {
-    console.error('❌ Supabase “requests” INSERT error:', error);
-    throw new Error(error.message);
+    if (error) throw error;
+    return data;
+  } catch (e) {
+    // absorb duplicate on unique index (requests.telnyx_id IS NOT NULL)
+    const msg = String(e?.message || '');
+    if (String(e?.code) === '23505' || /duplicate key value/i.test(msg)) {
+      if (telnyx_id) {
+        const { data: existing, error: selErr } = await supabase
+          .from('requests')
+          .select('*')
+          .eq('telnyx_id', telnyx_id)
+          .maybeSingle();
+        if (!selErr && existing) return existing;
+      }
+    }
+    console.error('❌ Supabase “requests” INSERT error:', e);
+    throw new Error(e.message || 'insertRequest failed');
   }
-  return data;
 }
 
-/** ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
  * ANALYTICS CORE FUNCTIONS (aligned with /analytics/full)
  */
 export async function getTotalRequests(startDate, endDate, hotelId) {
@@ -286,7 +315,7 @@ export async function getMissedSLACount(startDate, endDate, hotelId) {
   ).length;
 }
 
-// Replacement for per-day chart → Requests by Hour (0–23)
+// Requests by Hour (0–23), local-time aware via offset minutes
 export async function getRequestsByHour(startDate, endDate, hotelId, tzOffsetMinutes = -300) {
   const { data, error } = await supabase
     .from('requests')
@@ -372,22 +401,16 @@ export async function getTopDepartments(startDate, endDate, hotelId) {
     .map(([name, value]) => ({ name, value }));
 }
 
-// Tightened common request words (normalization + stoplist + frequency floor)
+// Common request words (light normalization + stoplist + frequency floor)
 export async function getCommonRequestWords(startDate, endDate, hotelId, options = {}) {
   const { topN = 5, minLen = 3, minCount = 2 } = options;
 
   const stopwords = new Set([
-    // pronouns / helpers
     'i','me','my','you','your','we','us','our','they','them','he','she','it','their','yall',
-    // greetings / pleasantries
     'hi','hey','hello','good','morning','afternoon','evening','night','thanks','thank','please','pls','ok','okay','yeah','yep','nope',
-    // generic verbs / modals
     'need','want','would','like','get','send','bring','have','do','can','could','is','are','be','was','were','am','has','had','will','may','might','must','should','shall','make','made','making','give','given','help','let','just','also','still','again',
-    // prepositions / articles / conjunctions
     'a','an','the','to','in','on','for','from','of','at','as','by','with','about','into','onto','over','under','out','up','down','off','through','around','between','and','or','but','if','so','not','no','yes','that','this','there','which','what','when','who','whom','where','why','how',
-    // time words
     'today','tonight','tomorrow','soon','later','before','after','now','tonite',
-    // domain-generic filler
     'room','suite','number','door','key','keys','card','cards','service','front','desk','guest','hotel',
   ]);
 
@@ -502,11 +525,12 @@ export async function getServiceScoreTrend(startDate, endDate, hotelId) {
     const weekNum = Math.ceil(
       ((d - new Date(year, 0, 1)) / 86400000 + new Date(year, 0, 1).getUTCDay() + 1) / 7
     );
-    const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
+      // simple score model
     const secs = r.acknowledged_at
       ? (new Date(r.acknowledged_at) - new Date(r.created_at)) / 1000
       : null;
     const score = secs == null ? 50 : secs <= 300 ? 100 : secs <= 600 ? 90 : secs <= 1200 ? 80 : 60;
+    const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
     if (!byWeek[week]) byWeek[week] = [];
     byWeek[week].push(score);
   });
@@ -708,7 +732,7 @@ export async function updateDepartmentToggle(hotelId, department, enabled) {
     .from('department_settings')
     .upsert(
       { hotel_id: hotelId, department, enabled },
-      { onConflict: ['hotel_id', 'department'] }
+      { onConflict: 'hotel_id,department' }
     );
   if (error) throw new Error(`updateDepartmentToggle: ${error.message}`);
 }
@@ -757,11 +781,13 @@ export async function upsertSlaSettings(hotelId, slaMap) {
   );
   const { data, error } = await supabase
     .from('sla_settings')
-    .upsert(payload, { onConflict: ['hotel_id', 'department'] });
+    .upsert(payload, { onConflict: 'hotel_id,department' });
   return { data, error };
 }
 
 // Suggested indexes (run once in Supabase SQL):
+// CREATE UNIQUE INDEX IF NOT EXISTS uniq_requests_telnyx_id
+//   ON public.requests (telnyx_id) WHERE telnyx_id IS NOT NULL;
 // CREATE INDEX IF NOT EXISTS idx_requests_hotel_created_at ON public.requests (hotel_id, created_at);
 // CREATE INDEX IF NOT EXISTS idx_requests_open_hotel ON public.requests (hotel_id) WHERE completed = false;
 // CREATE INDEX IF NOT EXISTS idx_guests_hotel_phone ON public.guests (hotel_id, phone_number);

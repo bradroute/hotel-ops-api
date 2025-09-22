@@ -2,71 +2,147 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import { supabaseAdmin } from '../services/supabaseService.js'; // your existing admin client
+import { supabaseAdmin } from '../services/supabaseService.js';
 
 const router = Router();
-const SESSION_HOURS = 720; // 30 days
 
+const SESSION_HOURS = Number(process.env.APP_SESSION_HOURS || 24 * 30); // default 30 days
+const PASSWORD_COST = Number(process.env.PASSWORD_COST || 12);
+
+/* ───────────── helpers ───────────── */
 function makeToken() {
   return crypto.randomBytes(32).toString('hex');
 }
-function addHours(d, h) {
-  return new Date(d.getTime() + h*3600*1000);
+function addHours(date, hours) {
+  return new Date(date.getTime() + hours * 3600 * 1000);
+}
+function normEmail(v = '') {
+  return String(v).trim().toLowerCase();
+}
+function toE164(v = '') {
+  const d = String(v).replace(/\D/g, '');
+  if (!d) return '';
+  return d.startsWith('1') ? `+${d}` : `+1${d}`;
+}
+function isReasonablePassword(p = '') {
+  // simple baseline: 8–128 chars
+  return typeof p === 'string' && p.length >= 8 && p.length <= 128;
+}
+function isEmailLike(e = '') {
+  // very light validation; rely on unique constraint in DB
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
+/* ───────────── POST /app/signup ───────────── */
 router.post('/signup', async (req, res) => {
   try {
-    const { fullName, email, phone, password } = req.body || {};
-    if (!fullName?.trim() || !email?.trim() || !phone?.trim() || !password) {
-      return res.status(400).send('All fields are required.');
-    }
-    const password_hash = await bcrypt.hash(password, 12);
+    const fullName = String(req.body?.fullName || '').trim();
+    const email = normEmail(req.body?.email || '');
+    const phone = toE164(req.body?.phone || '');
+    const password = req.body?.password || '';
 
-    // Upsert by email
-    const { data: upserted, error: upErr } = await supabaseAdmin
+    if (!fullName || !email || !phone || !password) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+    if (!isEmailLike(email)) {
+      return res.status(400).json({ error: 'Invalid email address.' });
+    }
+    if (!phone) {
+      return res.status(400).json({ error: 'Invalid phone number.' });
+    }
+    if (!isReasonablePassword(password)) {
+      return res.status(400).json({ error: 'Password must be 8–128 characters.' });
+    }
+
+    // Ensure email is not already registered (avoid upsert password overwrite risk)
+    const { data: existing, error: findErr } = await supabaseAdmin
       .from('app_accounts')
-      .upsert({ email: email.trim().toLowerCase(), full_name: fullName.trim(), phone, password_hash })
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+    if (findErr) throw findErr;
+    if (existing?.id) {
+      return res.status(409).json({ error: 'Email is already registered.' });
+    }
+
+    const password_hash = await bcrypt.hash(password, PASSWORD_COST);
+
+    const { data: created, error: insErr } = await supabaseAdmin
+      .from('app_accounts')
+      .insert({
+        email,
+        full_name: fullName,
+        phone,
+        password_hash,
+        created_at: new Date().toISOString(),
+      })
       .select('id')
       .single();
-    if (upErr) throw upErr;
+    if (insErr) throw insErr;
 
     const token = makeToken();
     const expires_at = addHours(new Date(), SESSION_HOURS).toISOString();
 
     const { error: sessErr } = await supabaseAdmin
       .from('app_auth_sessions')
-      .insert({ token, app_account_id: upserted.id, expires_at });
+      .insert({ token, app_account_id: created.id, expires_at });
     if (sessErr) throw sessErr;
 
-    return res.json({ app_account_id: upserted.id, session_token: token, expires_at });
+    return res.json({
+      app_account_id: created.id,
+      session_token: token,
+      expires_at,
+    });
   } catch (e) {
-    return res.status(500).send(e.message || 'Signup failed');
+    console.error('[signup] error:', e);
+    return res.status(500).json({ error: e.message || 'Signup failed' });
   }
 });
 
+/* ───────────── POST /app/login ───────────── */
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email?.trim() || !password) return res.status(400).send('Email and password are required.');
+    const email = normEmail(req.body?.email || '');
+    const password = req.body?.password || '';
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+    if (!isEmailLike(email)) {
+      return res.status(400).json({ error: 'Invalid email address.' });
+    }
+
     const { data: acct, error: fErr } = await supabaseAdmin
       .from('app_accounts')
       .select('id, password_hash')
-      .eq('email', email.trim().toLowerCase())
-      .single();
-    if (fErr || !acct) return res.status(401).send('Invalid credentials.');
-    const ok = await bcrypt.compare(password, acct.password_hash || '');
-    if (!ok) return res.status(401).send('Invalid credentials.');
+      .eq('email', email)
+      .maybeSingle();
+
+    if (fErr) throw fErr;
+    if (!acct?.id || !acct.password_hash) {
+      return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    const ok = await bcrypt.compare(password, acct.password_hash);
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials.' });
 
     const token = makeToken();
     const expires_at = addHours(new Date(), SESSION_HOURS).toISOString();
+
     const { error: sessErr } = await supabaseAdmin
       .from('app_auth_sessions')
       .insert({ token, app_account_id: acct.id, expires_at });
     if (sessErr) throw sessErr;
 
-    return res.json({ app_account_id: acct.id, session_token: token, expires_at });
+    return res.json({
+      app_account_id: acct.id,
+      session_token: token,
+      expires_at,
+    });
   } catch (e) {
-    return res.status(500).send(e.message || 'Login failed');
+    console.error('[login] error:', e);
+    return res.status(500).json({ error: e.message || 'Login failed' });
   }
 });
+
 export default router;
