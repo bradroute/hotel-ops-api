@@ -1,4 +1,3 @@
-// src/routes/sms.js
 import express from 'express';
 import { supabase, supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 import { sendRejectionSms, sendConfirmationSms } from '../services/telnyxService.js';
@@ -10,7 +9,7 @@ import { notifyStaffOnNewRequest } from '../services/notificationService.js';
 const router = express.Router();
 
 /* ───────────────────────── env toggles ───────────────────────── */
-const REQUIRE_SMS_AUTH = process.env.SMS_REQUIRE_AUTH !== 'false'; // set to 'false' to bypass while testing
+const REQUIRE_SMS_AUTH = process.env.SMS_REQUIRE_AUTH !== 'false'; // set SMS_REQUIRE_AUTH=false to bypass while testing
 
 /* ───────────────────────── helpers ───────────────────────── */
 const OUR_DIDS = new Set([
@@ -21,7 +20,7 @@ const isOurDid = (n) => !!n && OUR_DIDS.has(n);
 const e164 = (n) => (n ? String(n).replace(/[^\d+]/g, '') : n);
 const clip = (s, n = 160) => (typeof s === 'string' ? (s.length > n ? s.slice(0, n) + '…' : s) : '');
 
-/* ───────────────────────── minimal ingress log ───────────────────────── */
+/* ───────────────────────── ingress log ───────────────────────── */
 router.use((req, _res, next) => {
   try {
     const evt = req.body?.data?.event_type;
@@ -125,28 +124,59 @@ router.post('/', async (req, res) => {
       return res.status(200).send('ignored: duplicate');
     }
 
-    // Resolve hotel by DID
-    let hotel = null;
-    {
-      console.log('🏨 sms: hotel lookup by DID →', to);
-      const { data, error } = await supabase
-        .from('hotels')
-        .select('id, display_name, phone_number, sms_did')
-        .or(`sms_did.eq.${to},phone_number.eq.${to}`)
+    // ── Resolve hotel by DID ─────────────────────────────────────
+    console.log('🏨 sms: resolving hotel by DID →', to);
+
+    let hotelId = null;
+
+    // 1) Preferred: telnyx_numbers mapping table
+    try {
+      const { data: tn, error: tnErr } = await supabase
+        .from('telnyx_numbers')
+        .select('hotel_id')
+        .eq('phone_number', to)
         .maybeSingle();
-      if (error) {
-        console.error('❌ sms: hotel lookup error:', error);
-        return res.status(200).send('ignored: lookup error');
-      }
-      if (!data) {
-        console.warn('🚫 sms: unknown DID; no hotel row matches to=', to);
-        return res.status(200).send('ignored: unknown DID');
-      }
-      hotel = data;
-      console.log('✅ sms: hotel', hotel.id, hotel.display_name || '');
+      if (tnErr) console.warn('⚠️ sms: telnyx_numbers lookup error:', tnErr?.message);
+      hotelId = tn?.hotel_id || null;
+      if (hotelId) console.log('   ✓ matched via telnyx_numbers');
+    } catch (e) {
+      console.warn('⚠️ sms: telnyx_numbers lookup failed:', e?.message);
     }
 
-    // Staff check
+    // 2) Fallback: hotels.phone_number or hotels.front_desk_phone
+    if (!hotelId) {
+      const { data: h2, error: h2Err } = await supabase
+        .from('hotels')
+        .select('id')
+        .or(`phone_number.eq.${to},front_desk_phone.eq.${to}`)
+        .maybeSingle();
+      if (h2Err) console.warn('⚠️ sms: hotels fallback lookup error:', h2Err?.message);
+      hotelId = h2?.id || null;
+      if (hotelId) console.log('   ✓ matched via hotels.{phone_number|front_desk_phone}');
+    }
+
+    if (!hotelId) {
+      console.warn('🚫 sms: unknown DID; no mapping found to=', to);
+      return res.status(200).send('ignored: unknown DID');
+    }
+
+    // Fetch hotel row (use fields that actually exist)
+    const { data: hotel, error: hErr } = await supabase
+      .from('hotels')
+      .select('id, name, is_active')
+      .eq('id', hotelId)
+      .maybeSingle();
+    if (hErr) {
+      console.error('❌ sms: hotel fetch error:', hErr);
+      return res.status(200).send('ignored: hotel fetch error');
+    }
+    if (!hotel || hotel.is_active === false) {
+      console.warn('🚫 sms: hotel inactive/not found id=', hotelId);
+      return res.status(200).send('ignored: hotel inactive');
+    }
+    console.log('✅ sms: hotel', hotel.id, hotel.name || '');
+
+    // ── Staff / auth checks ──────────────────────────────────────
     let isStaff = false;
     try {
       const { data: staffRow, error: staffErr } = await supabase
@@ -162,7 +192,6 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ sms: staff check failed:', e?.message);
     }
 
-    // Authorization / pairing
     let isAuthorized = isStaff;
     let pairedRoom = null;
     const now = new Date().toISOString();
@@ -192,9 +221,8 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Authorization gate (toggle-able for testing)
     if (!isAuthorized && REQUIRE_SMS_AUTH) {
-      console.warn('🚫 sms: blocked unauthorized number; auth required (toggle SMS_REQUIRE_AUTH=false to bypass)');
+      console.warn('🚫 sms: blocked unauthorized number; auth required (set SMS_REQUIRE_AUTH=false to bypass)');
       try {
         await sendRejectionSms(
           from,
@@ -208,18 +236,18 @@ router.post('/', async (req, res) => {
       console.log('⚠️ sms: bypassing auth for testing (SMS_REQUIRE_AUTH=false)');
     }
 
-    // Send confirmation (non-blocking, but we’ll log failures)
+    // ── Confirmation (best-effort) ───────────────────────────────
     try {
       await sendConfirmationSms(
         from,
-        `Operon: Thanks for contacting ${hotel.display_name || 'the hotel'}. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. We will not sell or share your mobile information for promotional or marketing purposes.`
+        `Operon: Thanks for contacting ${hotel.name || 'the hotel'}. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. We will not sell or share your mobile information for promotional or marketing purposes.`
       );
       console.log('📤 sms: confirmation sent to', from);
     } catch (e) {
       console.error('❌ sms: confirmation send failed:', e?.payload || e?.message || e);
     }
 
-    // Classification (best-effort)
+    // ── Classification (best-effort) ─────────────────────────────
     let classification = { department: 'Front Desk', priority: 'normal', room_number: pairedRoom };
     try {
       const c = await classify(text, hotel.id);
@@ -229,7 +257,7 @@ router.post('/', async (req, res) => {
       console.warn('⚠️ sms: classification failed:', e?.message);
     }
 
-    // Guest tracking (only non-staff)
+    // ── Guest tracking (non-staff) ───────────────────────────────
     if (!isStaff) {
       try {
         const { data: guest } = await supabase
@@ -253,11 +281,11 @@ router.post('/', async (req, res) => {
           console.log('🗂️ sms: guest created');
         }
       } catch (e) {
-        console.warn('⚠️ sms: guest tracking failed:', e?.message);
+        console.warn('⚠️ sms: guest tracking failed (non-fatal):', e?.message);
       }
     }
 
-    // Insert request
+    // ── Insert request ───────────────────────────────────────────
     let created = null;
     try {
       created = await insertRequest({
@@ -268,15 +296,14 @@ router.post('/', async (req, res) => {
         priority: classification.priority,
         room_number: classification.room_number || pairedRoom || '',
         is_staff: isStaff,
-        is_vip: false, // recomputed later if needed
+        is_vip: false,
         telnyx_id: telnyxId,
         source: 'sms',
       });
       console.log('✅ sms: request inserted id=', created?.id, 'source=', created?.source);
     } catch (e) {
       console.error('🔥 sms: insertRequest failed:', e?.message || e);
-      // still 200 to avoid Telnyx retries
-      return res.status(200).send('insert failed');
+      return res.status(200).send('insert failed'); // keep 200 to prevent Telnyx retries
     }
 
     // Async staff notify
@@ -287,12 +314,11 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('❌ Error in POST /sms:', err);
     console.log('🏁 /sms errored in', Date.now() - t0, 'ms');
-    // Always 200 so Telnyx doesn’t retry storm
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true }); // always 200 to stop Telnyx retries
   }
 });
 
-/* ───────────────────────── ack / complete (unchanged) ───────────────────────── */
+/* ───────────────────────── ack / complete ───────────────────────── */
 router.patch('/:id/acknowledge', async (req, res, next) => {
   try {
     const id = req.params.id.trim();

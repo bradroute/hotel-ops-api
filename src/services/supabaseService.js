@@ -162,28 +162,32 @@ export async function insertRequest({
 
   // Ensure guest exists or update last_seen
   if (phoneNorm) {
+  try {
     const { data: existingGuest } = await supabase
       .from('guests')
       .select('id')
-      .eq('phone_number', phoneNorm)
-      .eq('hotel_id', hotel_id)
+      .eq('phone_number', phoneNorm)        // 🔁 match by unique column only
       .maybeSingle();
 
     if (!existingGuest) {
-      await supabase.from('guests').insert({
+      // Insert, but swallow unique-violation if someone else created it concurrently/elsewhere
+      const { error: gInsErr } = await supabase.from('guests').insert({
         phone_number: phoneNorm,
         is_vip: !!is_vip,
         hotel_id,
         last_seen: new Date().toISOString(),
       });
+      if (gInsErr && String(gInsErr.code) !== '23505') throw gInsErr;
     } else {
       await supabase
         .from('guests')
         .update({ last_seen: new Date().toISOString() })
         .eq('id', existingGuest.id);
     }
+  } catch (e) {
+    console.warn('⚠️ guest upsert skipped (non-fatal):', e?.message || e);
   }
-
+}
   // Ensure staff number is tracked if applicable
   if (is_staff && phoneNorm) {
     const { data: existingStaff } = await supabase
