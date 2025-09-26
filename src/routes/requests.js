@@ -3,11 +3,12 @@ import express from 'express';
 import {
   supabaseAdmin as supabase,
   insertRequest,
-  getEnabledDepartments, // reuse instead of duplicating logic
+  getEnabledDepartments,
 } from '../services/supabaseService.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { classify } from '../services/classifier.js';
-import { notifyStaffOnNewRequest } from '../services/notificationService.js'; // staff-only
+import { notifyStaffOnNewRequest } from '../services/notificationService.js';
+import { logRequestEvent } from '../services/auditLog.js'; // ← NEW
 
 const router = express.Router();
 
@@ -32,9 +33,7 @@ router.post('/preview', async (req, res) => {
     const { hotel_id: hotelIdBody, propertyId, message } = req.body || {};
     const hotel_id = hotelIdBody || propertyId;
     if (!hotel_id || !message) {
-      return res
-        .status(400)
-        .json({ error: 'hotel_id/propertyId and message are required.' });
+      return res.status(400).json({ error: 'hotel_id/propertyId and message are required.' });
     }
 
     const c = await classify(message, hotel_id).catch((e) => {
@@ -65,7 +64,6 @@ router.post('/preview', async (req, res) => {
 
 /* ── Create a New Guest/Staff Request ─────────────────────────
    Accepts EITHER room_number OR space_id (not both).
-   If both provided → 400. If neither → 400.
 ---------------------------------------------------------------- */
 router.post('/', async (req, res) => {
   try {
@@ -76,7 +74,7 @@ router.post('/', async (req, res) => {
       phone_number,
       from_phone,
       room_number,
-      space_id,         // NEW: allow space-based requests here too
+      space_id,
       department: deptOverride,
       priority: prioOverride,
       source,
@@ -92,16 +90,12 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Must provide exactly one of room_number OR space_id
     const hasRoom = !!(room_number && String(room_number).trim());
     const hasSpace = !!space_id;
     if (hasRoom === hasSpace) {
-      return res.status(400).json({
-        error: 'Provide exactly one of: room_number OR space_id.',
-      });
+      return res.status(400).json({ error: 'Provide exactly one of: room_number OR space_id.' });
     }
 
-    // Normalize phone up-front for all downstream usage
     const phoneE164 = toE164(inputPhone);
 
     // Validate space_id belongs to this hotel (if provided)
@@ -118,7 +112,7 @@ router.post('/', async (req, res) => {
         return res.status(404).json({ error: 'Space not found at this property.' });
       }
       finalSpaceId = spaceRow.id;
-      finalRoomLabel = spaceRow.name; // label for UI while persisting space_id
+      finalRoomLabel = spaceRow.name;
     } else {
       finalRoomLabel = String(room_number).trim();
     }
@@ -150,7 +144,7 @@ router.post('/', async (req, res) => {
     const { data: existingGuest } = await supabase
       .from('guests')
       .select('is_vip')
-      .eq('phone_number', phoneE164)   // use normalized phone
+      .eq('phone_number', phoneE164)
       .eq('hotel_id', hotel_id)
       .maybeSingle();
 
@@ -158,7 +152,7 @@ router.post('/', async (req, res) => {
     const { data: staffData } = await supabase
       .from('authorized_numbers')
       .select('is_staff')
-      .eq('phone', phoneE164)          // use normalized phone
+      .eq('phone', phoneE164)
       .eq('hotel_id', hotel_id)
       .maybeSingle();
 
@@ -168,7 +162,7 @@ router.post('/', async (req, res) => {
       message: String(message).trim().slice(0, 240),
       department,
       priority,
-      room_number: hasRoom ? finalRoomLabel : '', // if using space, pass empty; insertRequest will keep space_id
+      room_number: hasRoom ? finalRoomLabel : '',
       space_id: hasSpace ? finalSpaceId : null,
       is_staff: !!staffData?.is_staff,
       is_vip: !!existingGuest?.is_vip,
@@ -176,7 +170,8 @@ router.post('/', async (req, res) => {
       source: source || 'app_guest',
     });
 
-    // Notify staff about the new request (push; SMS/email handled in service)
+    // Triggers log 'created' automatically — no explicit audit call here.
+
     notifyStaffOnNewRequest(request).catch((e) =>
       console.warn('[notifyStaffOnNewRequest] failed:', e?.message || e)
     );
@@ -203,10 +198,7 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { hotel_id, phone, show_active_only } = req.query;
-
-    if (!hotel_id) {
-      return res.status(400).json({ error: 'Missing hotel_id in query.' });
-    }
+    if (!hotel_id) return res.status(400).json({ error: 'Missing hotel_id in query.' });
 
     let q = supabase
       .from('requests')
@@ -214,7 +206,6 @@ router.get('/', async (req, res) => {
       .eq('hotel_id', hotel_id)
       .order('created_at', { ascending: false });
 
-    // hide cancelled/completed unless caller disables
     if (String(show_active_only ?? '1') !== '0') {
       q = q.eq('cancelled', false).eq('completed', false);
     }
@@ -237,9 +228,7 @@ router.get('/', async (req, res) => {
       .eq('hotel_id', hotel_id);
     if (staffErr) throw staffErr;
 
-    const guestMap = Object.fromEntries(
-      (guests || []).map((g) => [digits(g.phone_number), g])
-    );
+    const guestMap = Object.fromEntries((guests || []).map((g) => [digits(g.phone_number), g]));
     const staffMap = Object.fromEntries(
       (staff || []).filter((s) => s.is_staff).map((s) => [digits(s.phone), true])
     );
@@ -260,8 +249,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-/* ── Acknowledge / Complete ─────────────────────────────────── */
-/* NOTE: Guest notifications are handled inside requestActions. */
+/* ── Acknowledge / Complete ───────────────────────────────────
+   DB triggers log 'acknowledged' and 'completed' automatically.
+---------------------------------------------------------------- */
 router.post('/:id/acknowledge', async (req, res, next) => {
   try {
     const { hotel_id } = req.query;
@@ -296,7 +286,9 @@ router.post('/:id/complete', async (req, res, next) => {
   }
 });
 
-/* ── Notes ──────────────────────────────────────────────────── */
+/* ── Notes ────────────────────────────────────────────────────
+   DB trigger logs 'note_added' on insert.
+---------------------------------------------------------------- */
 router.get('/:id/notes', async (req, res, next) => {
   try {
     const id = parseInt(String(req.params.id).trim(), 10);
@@ -334,13 +326,76 @@ router.delete('/:id/notes/:noteId', async (req, res, next) => {
   try {
     const id = parseInt(String(req.params.id).trim(), 10);
     const noteId = parseInt(String(req.params.noteId).trim(), 10);
-    const { error } = await supabase
-      .from('notes')
-      .delete()
-      .eq('id', noteId)
-      .eq('request_id', id);
+    const { error } = await supabase.from('notes').delete().eq('id', noteId).eq('request_id', id);
     if (error) throw error;
     return res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── History (read-only) ────────────────────────────────────── */
+router.get('/:id/history', async (req, res, next) => {
+  try {
+    const id = parseInt(String(req.params.id).trim(), 10);
+    const { data, error } = await supabase
+      .from('request_logs')
+      .select(
+        'id, action, from_status, to_status, from_priority, to_priority, from_department, to_department, actor_label, note, metadata, created_at'
+      )
+      .eq('request_id', id)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return res.json(data || []);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── Patch select fields + log (no overlap with trigger-logged fields) ──
+   Allowed: summary, root_cause, escalation_reason, estimated_revenue, needs_attention
+-------------------------------------------------------------------------- */
+router.patch('/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(String(req.params.id).trim(), 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+
+    const allow = ['summary', 'root_cause', 'escalation_reason', 'estimated_revenue', 'needs_attention'];
+    const patch = Object.fromEntries(
+      Object.entries(req.body || {}).filter(([k, v]) => allow.includes(k) && v !== undefined)
+    );
+
+    if (!Object.keys(patch).length) {
+      return res.status(400).json({ error: 'No allowed fields provided.' });
+    }
+
+    // fetch for hotel_id
+    const { data: cur, error: fErr } = await supabase
+      .from('requests')
+      .select('id, hotel_id')
+      .eq('id', id)
+      .single();
+    if (fErr || !cur) return res.status(404).json({ error: 'not_found' });
+
+    const { data, error } = await supabase
+      .from('requests')
+      .update(patch)
+      .eq('id', id)
+      .select('id')
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    // explicit audit for free-form fields
+    await logRequestEvent({
+      request_id: id,
+      hotel_id: cur.hotel_id,
+      action: 'field_changed',
+      actor_user_id: req.user?.id ?? null,
+      actor_label: 'Staff',
+      metadata: { patch },
+    });
+
+    return res.json({ success: true, id: data.id });
   } catch (err) {
     next(err);
   }
