@@ -4,16 +4,61 @@ import { openAIApiKey } from '../config/index.js';
 import {
   getEnabledDepartments,
   getHotelProfile,
-  getHotelSpaces, // must be exported by supabaseService.js
+  getHotelSpaces,
 } from './supabaseService.js';
 
 const openai = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null;
 
 /* ──────────────────────────────────────────────────────────────
- * Keyword override maps (by property type)
+ * Priority helpers (avoid downgrades)
+ * ──────────────────────────────────────────────────────────────*/
+const PRIORITY_RANK = { low: 0, normal: 1, urgent: 2 };
+const rank = (p) => PRIORITY_RANK[p] ?? PRIORITY_RANK.normal;
+const maxPriority = (a, b) => (rank(a) >= rank(b) ? a : b);
+
+const PRIORITY_SYNONYMS = {
+  low: 'low', minor: 'low', 'low-priority': 'low',
+  normal: 'normal', medium: 'normal', routine: 'normal', standard: 'normal',
+  high: 'urgent', urgent: 'urgent', critical: 'urgent', emergency: 'urgent',
+};
+
+function normalizePriority(input) {
+  if (typeof input === 'string') {
+    const s = input.toLowerCase().trim();
+    if (PRIORITY_SYNONYMS[s]) return PRIORITY_SYNONYMS[s];
+    if (/(urgent|critical|emergen|asap|immediate)/i.test(s)) return 'urgent';
+    if (/(low|minor|no rush|whenever)/i.test(s)) return 'low';
+  }
+  if (typeof input === 'number' && Number.isFinite(input)) {
+    const n = input;
+    if (n <= 1)       return n >= 0.75 ? 'urgent' : n <= 0.25 ? 'low' : 'normal';
+    if (n <= 100)     return n >= 75   ? 'urgent' : n <= 25   ? 'low' : 'normal';
+                      return n >= 2    ? 'urgent' : n <= 0    ? 'low' : 'normal';
+  }
+  return undefined;
+}
+
+const URGENT_RX =
+  /(asap|urgent|immediat|right away|emergen|leak|flood|burst|overflow|no (power|heat|ac|air|water)|fire|smoke|gas|carbon monoxide|locked out|security|injur|bleed)/i;
+const LOW_RX =
+  /(no rush|whenever|if possible|when you can|at your convenience|tomorrow|later)/i;
+
+function derivePriorityFromText(text = '') {
+  const t = text.toLowerCase();
+  if (URGENT_RX.test(t)) return 'urgent';
+  if (LOW_RX.test(t)) return 'low';
+  return 'normal';
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * Department keyword overrides
  * ──────────────────────────────────────────────────────────────*/
 const keywordMapByType = {
   hotel: [
+    // Room Service / In-Room Dining — prefer Room Service if enabled, else F&B
+    { keywords: ['room service','in-room dining','in room dining','send up','tray','breakfast','eggs','toast','coffee','order to room','order to my room','order breakfast','order food'], department: 'Room Service', fallback: 'Food & Beverage' },
+    { keywords: ['menu','drink','restaurant','bar','food','wine','cocktail'], department: 'Food & Beverage' },
+
     { keywords: ['wifi','wi-fi','internet','network'], department: 'IT' },
     { keywords: ['massage','spa','treatment'], department: 'Spa' },
     { keywords: ['bags','luggage','suitcase'], department: 'Bellhop' },
@@ -24,7 +69,6 @@ const keywordMapByType = {
     { keywords: ['reservation','book','cancel'], department: 'Reservations' },
     { keywords: ['laundry','dry clean','pressing'], department: 'Laundry' },
     { keywords: ['security','lost','safety','disturbance'], department: 'Security' },
-    { keywords: ['menu','drink','restaurant','bar','food'], department: 'Food & Beverage' },
   ],
   apartment: [
     { keywords: ['plumbing','leak','clog','drain'], department: 'Maintenance' },
@@ -61,49 +105,14 @@ const keywordMapByType = {
 function overrideDepartment(text, enabledDepartments, propertyType) {
   const lower = String(text || '').toLowerCase();
   const map = keywordMapByType[propertyType] || keywordMapByType.default;
-  for (const { keywords, department } of map) {
-    if (keywords.some((k) => lower.includes(k)) && enabledDepartments.includes(department)) {
-      return department;
+  for (const { keywords, department, fallback } of map) {
+    if (keywords.some((k) => lower.includes(k))) {
+      // Prefer mapped department if enabled; optionally fall back.
+      if (enabledDepartments.includes(department)) return department;
+      if (fallback && enabledDepartments.includes(fallback)) return fallback;
     }
   }
   return null;
-}
-
-/* ──────────────────────────────────────────────────────────────
- * Priority normalization + heuristics
- * ──────────────────────────────────────────────────────────────*/
-const PRIORITY_SYNONYMS = {
-  low: 'low', minor: 'low', 'low-priority': 'low',
-  normal: 'normal', medium: 'normal', routine: 'normal', standard: 'normal',
-  high: 'urgent', urgent: 'urgent', critical: 'urgent', emergency: 'urgent',
-};
-
-function normalizePriority(input) {
-  if (typeof input === 'string') {
-    const s = input.toLowerCase().trim();
-    if (PRIORITY_SYNONYMS[s]) return PRIORITY_SYNONYMS[s];
-    if (/(urgent|critical|emergen|asap|immediate)/i.test(s)) return 'urgent';
-    if (/(low|minor|no rush|whenever)/i.test(s)) return 'low';
-  }
-  if (typeof input === 'number' && Number.isFinite(input)) {
-    const n = input;
-    if (n <= 1)       return n >= 0.75 ? 'urgent' : n <= 0.25 ? 'low' : 'normal'; // 0..1
-    if (n <= 100)     return n >= 75   ? 'urgent' : n <= 25   ? 'low' : 'normal'; // 0..100
-                      return n >= 2    ? 'urgent' : n <= 0    ? 'low' : 'normal'; // ordinal
-  }
-  return undefined;
-}
-
-const URGENT_RX =
-  /(asap|urgent|immediat|right away|emergen|leak|flood|burst|overflow|no (power|heat|ac|air|water)|fire|smoke|gas|carbon monoxide|locked out|security|injur|bleed)/i;
-const LOW_RX =
-  /(no rush|whenever|if possible|when you can|at your convenience|tomorrow|later)/i;
-
-function derivePriorityFromText(text = '') {
-  const t = text.toLowerCase();
-  if (URGENT_RX.test(t)) return 'urgent';
-  if (LOW_RX.test(t)) return 'low';
-  return 'normal';
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -131,13 +140,11 @@ function extractRoomOrSpace(text, hotelSpaces = []) {
   const msg = String(text || '');
   const lower = msg.toLowerCase();
 
-  // room/suite patterns: "room 204", "rm 12B", "suite 1501", "in room 7"
   const roomMatch =
     lower.match(/\b(room|rm|suite)\s*#?\s*([a-z]?\d{1,5}[a-z]?)\b/i) ||
     lower.match(/\b(?:in|at)\s+(room|rm|suite)\s*#?\s*([a-z]?\d{1,5}[a-z]?)\b/i);
   if (roomMatch?.[2]) return roomMatch[2].toUpperCase();
 
-  // match named space from DB by name (slug optional if present)
   const candidates = [];
   for (const s of hotelSpaces || []) {
     if (s?.is_active === false) continue;
@@ -165,7 +172,7 @@ function extractRoomOrSpace(text, hotelSpaces = []) {
 }
 
 /* ──────────────────────────────────────────────────────────────
- * OpenAI helpers (with timeout + safe JSON)
+ * OpenAI helpers
  * ──────────────────────────────────────────────────────────────*/
 function safeParseJSON(s, fallback) {
   try {
@@ -202,15 +209,11 @@ async function callOpenAIJSON(prompt, { timeoutMs = 2500 } = {}) {
  * Public: classify()
  * ──────────────────────────────────────────────────────────────*/
 export async function classify(text, hotelId) {
-  console.log('🟦 Classifying message:', text);
-  console.log('🏨 Hotel ID:', hotelId);
-
   const { data: hotel } = await getHotelProfile(hotelId);
   const propertyType = hotel?.type?.toLowerCase?.() || 'hotel';
 
   const enabled = await getEnabledDepartments(hotelId);
   if (!enabled?.length) {
-    console.warn(`❌ No enabled departments for hotel ${hotelId}, defaulting.`);
     return { department: 'Front Desk', priority: derivePriorityFromText(text), room_number: '' };
   }
 
@@ -221,17 +224,20 @@ export async function classify(text, hotelId) {
   } catch (e) {
     console.warn('⚠️ getHotelSpaces failed:', e?.message || e);
   }
-  const extractedSpace = extractRoomOrSpace(text, spaces); // '' if not found
+  const extractedSpace = extractRoomOrSpace(text, spaces);
 
   // 1) fast keyword override
   const forcedDept = overrideDepartment(text, enabled, propertyType);
   if (forcedDept) {
-    let pr = derivePriorityFromText(text);
+    // Never downgrade priority when enriching.
+    const heuristic = derivePriorityFromText(text);
+    let enriched = heuristic;
     try {
       const enr = await enrichRequest(text);
-      pr = normalizePriority(enr?.priority) || pr;
-    } catch { /* noop, keep heuristic */ }
-    return { department: forcedDept, priority: pr, room_number: extractedSpace || '' };
+      const fromEnrich = normalizePriority(enr?.priority);
+      if (fromEnrich) enriched = maxPriority(fromEnrich, heuristic);
+    } catch { /* keep heuristic */ }
+    return { department: forcedDept, priority: enriched, room_number: extractedSpace || '' };
   }
 
   // 2) model classification (JSON-only)
@@ -251,19 +257,16 @@ Message: "${text}"`;
 
   // Validate department
   if (!enabled.includes(parsed.department)) {
-    console.warn(`🚫 "${parsed.department}" not enabled; defaulting to Front Desk.`);
     parsed.department = 'Front Desk';
   }
 
-  // Priority normalization + hint
+  // Priority: normalize and then upgrade with heuristic if higher
   let priority =
     normalizePriority(parsed.priority) ??
     normalizePriority(parsed.urgency) ??
     'normal';
-  if (priority === 'normal') {
-    const hint = derivePriorityFromText(text);
-    if (hint !== 'normal') priority = hint;
-  }
+  const hint = derivePriorityFromText(text);
+  priority = maxPriority(priority, hint);
 
   // Room/space final
   const rn = typeof parsed.room_number === 'string' ? parsed.room_number.trim() : '';
