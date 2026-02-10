@@ -1,5 +1,6 @@
 // src/routes/smsStatus.js
 import express from 'express';
+import logger from '../lib/logger.js';
 const router = express.Router();
 
 router.post('/', (req, res) => {
@@ -9,7 +10,7 @@ router.post('/', (req, res) => {
   const st  = req.body?.data?.payload?.to?.[0]?.status || req.body?.data?.payload?.status;
 
   // minimal, non-recursive logging
-  if (evt && id) console.log(`📬 /sms-status evt=${evt} id=${id} to=${to} status=${st}`);
+  if (evt && id) logger.info({ evt, id, to, status: st }, 'sms-status webhook');
   return res.sendStatus(200);
 });
 

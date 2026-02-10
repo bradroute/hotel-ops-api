@@ -1,12 +1,13 @@
 import 'dotenv/config';
 import { supabase } from '../services/supabaseService.js';
 import { sendSms } from '../services/smsGateway.js';
+import logger from '../lib/logger.js';
 
 const REMINDER_THRESHOLD_MINUTES = 6;
 const MANAGER_PHONE = process.env.MANAGER_PHONE;
 
 async function checkUnacknowledgedRequests() {
-  console.log('🔍 Checking for unacknowledged requests...');
+  logger.info('Checking for unacknowledged requests...');
   const cutoff = new Date(Date.now() - REMINDER_THRESHOLD_MINUTES * 60000).toISOString();
 
   const { data: reqs, error } = await supabase
@@ -16,16 +17,16 @@ async function checkUnacknowledgedRequests() {
     .lte('created_at', cutoff);
 
   if (error) {
-    console.error('❌ Error fetching requests:', error);
+    logger.error({ err: error }, 'Error fetching requests');
     return;
   }
 
   for (const r of reqs) {
-    console.log(`📣 Found request ${r.id} older than ${REMINDER_THRESHOLD_MINUTES}m`);
+    logger.warn({ requestId: r.id, thresholdMinutes: REMINDER_THRESHOLD_MINUTES }, 'Found unacknowledged request');
     await sendSms(MANAGER_PHONE, `Reminder: You have a request (ID ${r.id}) waiting for acknowledgment.`, 'Reminder');
   }
 
-  console.log('✅ Reminder check complete.');
+  logger.info('Reminder check complete');
 }
 
 export function start() {

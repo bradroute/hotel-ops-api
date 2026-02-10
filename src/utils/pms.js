@@ -1,5 +1,6 @@
 // src/utils/pms.js
 import { supabaseAdmin } from '../services/supabaseService.js';
+import logger from '../lib/logger.js';
 
 /**
  * fakeCheckIns: Array of objects with
@@ -11,7 +12,7 @@ import { supabaseAdmin } from '../services/supabaseService.js';
 export async function syncCheckIns(fakeCheckIns) {
   for (const { phone, room, checkout, hotel_id } of fakeCheckIns) {
     if (!hotel_id) {
-      console.error('❌ Missing hotel_id for check-in:', { phone, room });
+      logger.error({ phone, room }, 'Missing hotel_id for check-in');
       continue;
     }
 
@@ -26,8 +27,8 @@ export async function syncCheckIns(fakeCheckIns) {
         is_staff: false,
       })
       .select();
-    if (authErr) console.error('❌ Error upserting authorized_numbers:', authErr);
-    else console.log('➕ authorized_numbers upserted for', phone, authData);
+    if (authErr) logger.error({ err: authErr }, 'Error upserting authorized_numbers');
+    else logger.info({ phone }, 'authorized_numbers upserted');
 
     // Upsert the slot record
     const { data: slotData, error: slotErr } = await supabaseAdmin
@@ -39,7 +40,7 @@ export async function syncCheckIns(fakeCheckIns) {
         hotel_id,
       })
       .select();
-    if (slotErr) console.error('❌ Error upserting room_device_slots:', slotErr);
-    else console.log('↗️ room_device_slots upserted for room', room, slotData);
+    if (slotErr) logger.error({ err: slotErr }, 'Error upserting room_device_slots');
+    else logger.info({ room }, 'room_device_slots upserted');
   }
 }

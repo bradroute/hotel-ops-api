@@ -1,6 +1,9 @@
 // src/routes/guest.js
 import express from 'express';
 import { randomUUID } from 'crypto';
+import { validate } from '../middleware/validate.js';
+import { guestStartBody, hotelIdParams } from '../schemas/guest.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -44,68 +47,72 @@ router.get('/ping', (_req, res) => res.json({ pong: true }));
 
 /**
  * GET /guest/properties/:hotelId/departments
- * Read order: department_settings.enabled=true → profiles.enabled_departments → hotels.departments_enabled → defaults
+ * Read order: department_settings.enabled=true -> profiles.enabled_departments -> hotels.departments_enabled -> defaults
  * Always 200 with a list (fail-safe).
  */
-router.get('/properties/:hotelId/departments', async (req, res) => {
-  const { hotelId } = req.params;
-  const supabaseAdmin = req.app?.locals?.supabaseAdmin; // service role
-  const supabase = req.app?.locals?.supabase;           // anon/public
+router.get(
+  '/properties/:hotelId/departments',
+  validate({ params: hotelIdParams }),
+  async (req, res) => {
+    const { hotelId } = req.params;
+    const supabaseAdmin = req.app?.locals?.supabaseAdmin; // service role
+    const supabase = req.app?.locals?.supabase;           // anon/public
 
-  try {
-    // 1) department_settings.enabled = true (admin)
-    if (supabaseAdmin) {
-      const { data: depRows, error: depErr } = await supabaseAdmin
-        .from('department_settings')
-        .select('department')
-        .eq('hotel_id', hotelId)
-        .eq('enabled', true);
+    try {
+      // 1) department_settings.enabled = true (admin)
+      if (supabaseAdmin) {
+        const { data: depRows, error: depErr } = await supabaseAdmin
+          .from('department_settings')
+          .select('department')
+          .eq('hotel_id', hotelId)
+          .eq('enabled', true);
 
-      if (!depErr && depRows?.length) {
-        return okDepts(res, depRows.map((r) => r.department));
+        if (!depErr && depRows?.length) {
+          return okDepts(res, depRows.map((r) => r.department));
+        }
+        if (depErr) logger.warn({ err: depErr }, 'department_settings read failed');
+      } else {
+        logger.warn('supabaseAdmin missing; skipping department_settings');
       }
-      if (depErr) console.warn('[DEPTS] department_settings read failed:', depErr);
-    } else {
-      console.warn('[DEPTS] supabaseAdmin missing; skipping department_settings');
-    }
 
-    // 2) profiles.enabled_departments (admin)
-    if (supabaseAdmin) {
-      const { data: prof, error: profErr } = await supabaseAdmin
-        .from('profiles')
-        .select('enabled_departments')
-        .eq('hotel_id', hotelId)
-        .maybeSingle();
+      // 2) profiles.enabled_departments (admin)
+      if (supabaseAdmin) {
+        const { data: prof, error: profErr } = await supabaseAdmin
+          .from('profiles')
+          .select('enabled_departments')
+          .eq('hotel_id', hotelId)
+          .maybeSingle();
 
-      if (!profErr && Array.isArray(prof?.enabled_departments) && prof.enabled_departments.length) {
-        return okDepts(res, prof.enabled_departments);
+        if (!profErr && Array.isArray(prof?.enabled_departments) && prof.enabled_departments.length) {
+          return okDepts(res, prof.enabled_departments);
+        }
+        if (profErr) logger.warn({ err: profErr }, 'profiles fallback failed');
       }
-      if (profErr) console.warn('[DEPTS] profiles fallback failed:', profErr);
-    }
 
-    // 3) hotels.departments_enabled (anon)
-    if (supabase) {
-      const { data: hotel, error: hotelErr } = await supabase
-        .from('hotels')
-        .select('departments_enabled')
-        .eq('id', hotelId)
-        .maybeSingle();
+      // 3) hotels.departments_enabled (anon)
+      if (supabase) {
+        const { data: hotel, error: hotelErr } = await supabase
+          .from('hotels')
+          .select('departments_enabled')
+          .eq('id', hotelId)
+          .maybeSingle();
 
-      if (!hotelErr && Array.isArray(hotel?.departments_enabled)) {
-        return okDepts(res, hotel.departments_enabled);
+        if (!hotelErr && Array.isArray(hotel?.departments_enabled)) {
+          return okDepts(res, hotel.departments_enabled);
+        }
+        if (hotelErr) logger.warn({ err: hotelErr }, 'hotels fallback failed');
+      } else {
+        logger.warn('supabase anon client missing; using defaults');
       }
-      if (hotelErr) console.warn('[DEPTS] hotels fallback failed:', hotelErr);
-    } else {
-      console.warn('[DEPTS] supabase anon client missing; using defaults');
-    }
 
-    // 4) defaults
-    return okDepts(res, DEFAULT_DEPTS);
-  } catch (err) {
-    console.error('[DEPTS] unexpected error:', err);
-    return okDepts(res, DEFAULT_DEPTS);
+      // 4) defaults
+      return okDepts(res, DEFAULT_DEPTS);
+    } catch (err) {
+      logger.error({ err }, 'unexpected error in departments lookup');
+      return okDepts(res, DEFAULT_DEPTS);
+    }
   }
-});
+);
 
 /**
  * POST /guest/start
@@ -113,9 +120,9 @@ router.get('/properties/:hotelId/departments', async (req, res) => {
  *  - propertyCode must match hotels.guest_code (case-insensitive)
  * Writes with service-role client (RLS-safe).
  */
-router.post('/start', async (req, res) => {
+router.post('/start', validate({ body: guestStartBody }), async (req, res) => {
   try {
-    const { name, phone, propertyCode, lat, lng } = req.body || {};
+    const { name, phone, propertyCode, lat, lng } = req.body;
     const supabase = req.app?.locals?.supabase;           // anon
     const supabaseAdmin = req.app?.locals?.supabaseAdmin; // service role
 
@@ -127,7 +134,6 @@ router.post('/start', async (req, res) => {
     if (!e164) return res.status(400).json({ error: 'invalid_phone' });
 
     const code = String(propertyCode || '').trim();
-    if (!code) return res.status(400).json({ error: 'missing_property_code' });
 
     // accept numeric strings for coords
     const latNum = typeof lat === 'string' ? Number(lat) : lat;
@@ -144,7 +150,7 @@ router.post('/start', async (req, res) => {
       .maybeSingle();
 
     if (hErr) {
-      console.error('[guest/start] hotels lookup error:', hErr);
+      logger.error({ err: hErr }, 'guest/start hotels lookup error');
       return res.status(500).json({ error: 'db_error' });
     }
     if (!hotel || hotel.is_active === false) {
@@ -181,7 +187,7 @@ router.post('/start', async (req, res) => {
     const { error: aErr } = await supabaseAdmin
       .from('authorized_numbers')
       .upsert(upsertRow, { onConflict: 'phone,hotel_id' });
-    if (aErr) console.error('[guest/start] authorized_numbers upsert error:', aErr);
+    if (aErr) logger.error({ err: aErr }, 'guest/start authorized_numbers upsert error');
 
     // Create a guest session token (service-role)
     const token = createGuestToken();
@@ -197,7 +203,7 @@ router.post('/start', async (req, res) => {
       }]);
 
     if (sErr) {
-      console.error('[guest/start] guest_sessions insert error:', sErr);
+      logger.error({ err: sErr }, 'guest/start guest_sessions insert error');
       // non-fatal; still return authorized
     }
 
@@ -211,7 +217,7 @@ router.post('/start', async (req, res) => {
       popt: '',  // reserved header if your API expects it
     });
   } catch (e) {
-    console.error('POST /guest/start error:', e);
+    logger.error({ err: e }, 'POST /guest/start error');
     return res.status(500).json({ error: 'server_error' });
   }
 });

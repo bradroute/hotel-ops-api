@@ -14,6 +14,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseUrl, supabaseKey, supabaseServiceRoleKey } from '../config/index.js';
 import { estimateOrderRevenue } from './menuCatalog.js';
 import { enrichRequest, classify } from './classifier.js'; // AI enrichment + classification
+import logger from '../lib/logger.js';
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: { enabled: false },
@@ -94,7 +95,7 @@ async function validateSpaceIdForHotel(space_id, hotel_id) {
     .eq('hotel_id', hotel_id)
     .maybeSingle();
   if (error) {
-    console.warn('validateSpaceIdForHotel error:', error.message);
+    logger.warn({ err: error }, 'validateSpaceIdForHotel error');
     return null;
   }
   return data?.id ?? null;
@@ -132,7 +133,7 @@ export async function insertRequest({
   try {
     estimated_revenue = estimateOrderRevenue(message);
   } catch (e) {
-    console.warn('⚠️ estimateOrderRevenue failed; defaulting to 0:', e?.message || e);
+    logger.warn({ err: e }, 'estimateOrderRevenue failed; defaulting to 0');
     estimated_revenue = 0;
   }
 
@@ -148,7 +149,7 @@ export async function insertRequest({
       aiPrio = needPrio ? (cls?.priority || null)   : null;
       aiRoom = needRoom ? (cls?.room_number || null): null;
     } catch (err) {
-      console.error('❌ classify() failed:', err);
+      logger.error({ err }, 'classify() failed');
     }
   }
 
@@ -161,7 +162,7 @@ export async function insertRequest({
       const enr = await enrichRequest(message);
       enrichment = (enr && typeof enr === 'object') ? enr : {};
     } catch (err) {
-      console.error('❌ enrichRequest() failed:', err);
+      logger.error({ err }, 'enrichRequest() failed');
       enrichment = {};
     }
   }
@@ -193,7 +194,7 @@ export async function insertRequest({
           .eq('id', existingGuest.id);
       }
     } catch (e) {
-      console.warn('⚠️ guest upsert skipped (non-fatal):', e?.message || e);
+      logger.warn({ err: e }, 'guest upsert skipped (non-fatal)');
     }
   }
 
@@ -215,7 +216,7 @@ export async function insertRequest({
         if (sErr && String(sErr.code) !== '23505') throw sErr;
       }
     } catch (e) {
-      console.warn('⚠️ staff number insert skipped (non-fatal):', e?.message || e);
+      logger.warn({ err: e }, 'staff number insert skipped (non-fatal)');
     }
   }
 
@@ -284,7 +285,7 @@ export async function insertRequest({
         if (!selErr && existing) return existing;
       }
     }
-    console.error('❌ Supabase “requests” INSERT error:', e);
+    logger.error({ err: e }, 'Supabase requests INSERT error');
     throw new Error(e.message || 'insertRequest failed');
   }
 }

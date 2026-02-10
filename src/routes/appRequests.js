@@ -2,6 +2,15 @@
 import { Router } from 'express';
 import { supabaseAdmin, insertRequest } from '../services/supabaseService.js';
 import { notifyStaffOnNewRequest } from '../services/notificationService.js';
+import { validate } from '../middleware/validate.js';
+import {
+  pushRegisterBody,
+  appRequestBody,
+  patchAppRequestBody,
+  appRequestIdParams,
+  spacesQuery,
+} from '../schemas/appRequests.js';
+import logger from '../lib/logger.js';
 
 const router = Router();
 const DEFAULT_GEOFENCE_MILES = Number(process.env.GEOFENCE_MILES || 1);
@@ -46,7 +55,7 @@ function milesBetween(lat1, lon1, lat2, lon2) {
 /* ===========================================================
  * POST /app/push/register  (guest OR staff)
  * =========================================================== */
-router.post('/push/register', async (req, res) => {
+router.post('/push/register', validate({ body: pushRegisterBody }), async (req, res) => {
   try {
     const sessionToken =
       req.header('X-App-Session') ||
@@ -140,7 +149,7 @@ router.post('/push/register', async (req, res) => {
 
     return res.json({ ok: true, mode: 'staff' });
   } catch (e) {
-    console.error('push/register error', e);
+    logger.error({ err: e }, 'push/register error');
     return res.status(500).json({ error: e.message || 'Could not register push token' });
   }
 });
@@ -183,9 +192,9 @@ async function spacesHandler(req, res) {
     return res.status(500).json({ error: e.message || 'Could not fetch spaces' });
   }
 }
-router.get('/spaces', spacesHandler);
-router.get('/hotel-spaces', spacesHandler);
-router.get('/hotelSpaces', spacesHandler);
+router.get('/spaces', validate({ query: spacesQuery }), spacesHandler);
+router.get('/hotel-spaces', validate({ query: spacesQuery }), spacesHandler);
+router.get('/hotelSpaces', validate({ query: spacesQuery }), spacesHandler);
 router.get('/spaces/by-code/:propertyCode', (req, res) => {
   req.query.propertyCode = String(req.params.propertyCode || '').trim();
   return spacesHandler(req, res);
@@ -194,7 +203,7 @@ router.get('/spaces/by-code/:propertyCode', (req, res) => {
 /* ===========================================================
  * POST /app/request
  * =========================================================== */
-router.post('/request', async (req, res) => {
+router.post('/request', validate({ body: appRequestBody }), async (req, res) => {
   try {
     const token =
       req.header('X-App-Session') ||
@@ -215,11 +224,7 @@ router.post('/request', async (req, res) => {
       from_phone,
       priority,
       department,
-    } = req.body || {};
-
-    if (!propertyCode?.trim() || !message?.trim()) {
-      return res.status(400).json({ error: 'propertyCode and message are required.' });
-    }
+    } = req.body;
 
     const roomProvided = !!(roomNumber && String(roomNumber).trim());
     const spaceProvided = !!(spaceId || spaceSlug || spaceName);
@@ -228,9 +233,6 @@ router.post('/request', async (req, res) => {
     }
     if (roomProvided && spaceProvided) {
       return res.status(400).json({ error: 'Provide only one: roomNumber OR space (not both).' });
-    }
-    if (typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).json({ error: 'Location required.' });
     }
 
     const { data: hotel } = await supabaseAdmin
@@ -312,7 +314,7 @@ router.post('/request', async (req, res) => {
       lng,
     });
 
-    notifyStaffOnNewRequest(created).catch((e) => console.error('staff notify (app) failed', e));
+    notifyStaffOnNewRequest(created).catch((e) => logger.error({ err: e }, 'staff notify (app) failed'));
 
     return res.json({
       id: created.id,
@@ -355,56 +357,59 @@ router.get('/requests', async (req, res) => {
 /* ===========================================================
  * PATCH /app/requests/:id
  * =========================================================== */
-router.patch('/requests/:id', async (req, res) => {
-  try {
-    const token =
-      req.header('X-App-Session') ||
-      req.header('X-App-Auth') ||
-      (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
-    const sess = await getSession(token);
-    if (!sess) return res.status(401).json({ error: 'Not signed in.' });
+router.patch(
+  '/requests/:id',
+  validate({ params: appRequestIdParams, body: patchAppRequestBody }),
+  async (req, res) => {
+    try {
+      const token =
+        req.header('X-App-Session') ||
+        req.header('X-App-Auth') ||
+        (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+      const sess = await getSession(token);
+      if (!sess) return res.status(401).json({ error: 'Not signed in.' });
 
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+      const id = Number(req.params.id);
 
-    const { data: row, error: fErr } = await supabaseAdmin
-      .from('requests')
-      .select('id, app_account_id, acknowledged, completed, cancelled, message, priority')
-      .eq('id', id)
-      .maybeSingle();
+      const { data: row, error: fErr } = await supabaseAdmin
+        .from('requests')
+        .select('id, app_account_id, acknowledged, completed, cancelled, message, priority')
+        .eq('id', id)
+        .maybeSingle();
 
-    if (fErr || !row) return res.status(404).json({ error: 'Request not found.' });
-    if (row.app_account_id !== sess.app_account_id) return res.status(403).json({ error: 'Forbidden.' });
-    if (row.completed || row.cancelled) return res.status(400).json({ error: 'Request can no longer be modified.' });
+      if (fErr || !row) return res.status(404).json({ error: 'Request not found.' });
+      if (row.app_account_id !== sess.app_account_id) return res.status(403).json({ error: 'Forbidden.' });
+      if (row.completed || row.cancelled) return res.status(400).json({ error: 'Request can no longer be modified.' });
 
-    const { message, priority, cancel } = req.body || {};
-    const patch = {};
+      const { message, priority, cancel } = req.body || {};
+      const patch = {};
 
-    if (cancel === true) {
-      patch.cancelled = true;
-    } else {
-      if (typeof message === 'string') {
-        if (row.acknowledged) return res.status(400).json({ error: 'Message cannot be edited after acknowledgement.' });
-        if (!message.trim()) return res.status(400).json({ error: 'Message cannot be empty.' });
-        patch.message = message.trim();
+      if (cancel === true) {
+        patch.cancelled = true;
+      } else {
+        if (typeof message === 'string') {
+          if (row.acknowledged) return res.status(400).json({ error: 'Message cannot be edited after acknowledgement.' });
+          if (!message.trim()) return res.status(400).json({ error: 'Message cannot be empty.' });
+          patch.message = message.trim();
+        }
+        if (typeof priority === 'string') patch.priority = priority.trim().toLowerCase();
       }
-      if (typeof priority === 'string') patch.priority = priority.trim().toLowerCase();
+
+      if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'No changes provided.' });
+
+      const { data: updated, error: uErr } = await supabaseAdmin
+        .from('requests')
+        .update(patch)
+        .eq('id', id)
+        .select('id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source')
+        .maybeSingle();
+      if (uErr) throw uErr;
+
+      return res.json(updated);
+    } catch (e) {
+      return res.status(500).json({ error: e.message || 'Could not update request' });
     }
-
-    if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'No changes provided.' });
-
-    const { data: updated, error: uErr } = await supabaseAdmin
-      .from('requests')
-      .update(patch)
-      .eq('id', id)
-      .select('id, created_at, message, department, priority, acknowledged, completed, cancelled, room_number, source')
-      .maybeSingle();
-    if (uErr) throw uErr;
-
-    return res.json(updated);
-  } catch (e) {
-    return res.status(500).json({ error: e.message || 'Could not update request' });
   }
-});
+);
 
 export default router;

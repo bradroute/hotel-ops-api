@@ -6,6 +6,7 @@ dotenv.config();
 import { createClient } from '@supabase/supabase-js';
 import { sendConfirmationSms } from '../services/telnyxService.js'; // Correct export!
 import { supabaseUrl, supabaseServiceRoleKey } from '../config/index.js';
+import logger from '../lib/logger.js';
 
 // Initialize Supabase with Service Role Key for full DB access
 const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
@@ -22,7 +23,7 @@ async function sendRentReminders() {
     .limit(1); // <-- REMOVE this .limit(1) after testing!
 
   if (error) {
-    console.error('❌ Failed to fetch tenants:', error);
+    logger.error({ err: error }, 'Failed to fetch tenants');
     return;
   }
 
@@ -32,13 +33,13 @@ async function sendRentReminders() {
 
     try {
       await sendConfirmationSms(tenant.phone, message); // Compliance footer auto-added!
-      console.log(`✅ SMS sent to ${tenant.phone}`);
+      logger.info({ phone: tenant.phone }, 'Rent reminder SMS sent');
     } catch (err) {
-      console.error(`❌ Failed to send to ${tenant.phone}:`, err.message);
+      logger.error({ phone: tenant.phone, err: { message: err.message } }, 'Failed to send rent reminder');
     }
   }
 
-  console.log(`🎉 Rent reminders complete: ${tenants.length} total.`);
+  logger.info({ count: tenants.length }, 'Rent reminders complete');
 }
 
-sendRentReminders().catch(console.error);
+sendRentReminders().catch((err) => logger.error({ err }, 'sendRentReminders failed'));

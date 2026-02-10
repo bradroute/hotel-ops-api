@@ -6,6 +6,7 @@ import {
   getHotelProfile,
   getHotelSpaces,
 } from './supabaseService.js';
+import logger from '../lib/logger.js';
 
 const openai = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null;
 
@@ -198,7 +199,7 @@ async function callOpenAIJSON(prompt, { timeoutMs = 2500 } = {}) {
     );
     return res.choices?.[0]?.message?.content ?? null;
   } catch (e) {
-    console.warn('[classifier] OpenAI call failed:', e?.message || e);
+    logger.warn({ err: e }, 'OpenAI call failed');
     return null;
   } finally {
     clearTimeout(timer);
@@ -222,7 +223,7 @@ export async function classify(text, hotelId) {
   try {
     spaces = (await getHotelSpaces(hotelId)) || [];
   } catch (e) {
-    console.warn('⚠️ getHotelSpaces failed:', e?.message || e);
+    logger.warn({ err: e }, 'getHotelSpaces failed');
   }
   const extractedSpace = extractRoomOrSpace(text, spaces);
 

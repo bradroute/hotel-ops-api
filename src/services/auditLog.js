@@ -1,5 +1,6 @@
 // server-side only (service role)
 import { supabaseAdmin } from './supabaseService.js';
+import logger from '../lib/logger.js';
 
 export async function logRequestEvent({
   request_id,
@@ -33,5 +34,5 @@ export async function logRequestEvent({
   };
 
   const { error } = await supabaseAdmin.from('request_logs').insert([payload]);
-  if (error) console.error('[audit] insert failed', error, payload);
+  if (error) logger.error({ err: error, payload }, 'audit insert failed');
 }

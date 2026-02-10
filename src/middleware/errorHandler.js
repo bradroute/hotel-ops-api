@@ -1,4 +1,6 @@
 // src/middleware/errorHandler.js
+import logger from '../lib/logger.js';
+
 export function errorHandler(err, req, res, next) {
   const status = err.status || 500;
 
@@ -9,7 +11,7 @@ export function errorHandler(err, req, res, next) {
 
   // Tag log with route and method
   const route = `${req.method} ${req.originalUrl}`;
-  console.error(`[${route}]`, err.stack || err);
+  logger.error({ err, route }, 'Unhandled error');
 
   // Provide safe JSON
   const body = { error: err.message || 'Internal Server Error' };

@@ -3,6 +3,9 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../services/supabaseService.js';
+import { validate } from '../middleware/validate.js';
+import { signupBody, loginBody } from '../schemas/appAuth.js';
+import logger from '../lib/logger.js';
 
 const router = Router();
 
@@ -25,7 +28,7 @@ function toE164(v = '') {
   return d.startsWith('1') ? `+${d}` : `+1${d}`;
 }
 function isReasonablePassword(p = '') {
-  // simple baseline: 8–128 chars
+  // simple baseline: 8-128 chars
   return typeof p === 'string' && p.length >= 8 && p.length <= 128;
 }
 function isEmailLike(e = '') {
@@ -34,16 +37,13 @@ function isEmailLike(e = '') {
 }
 
 /* ───────────── POST /app/signup ───────────── */
-router.post('/signup', async (req, res) => {
+router.post('/signup', validate({ body: signupBody }), async (req, res) => {
   try {
     const fullName = String(req.body?.fullName || '').trim();
     const email = normEmail(req.body?.email || '');
     const phone = toE164(req.body?.phone || '');
     const password = req.body?.password || '';
 
-    if (!fullName || !email || !phone || !password) {
-      return res.status(400).json({ error: 'All fields are required.' });
-    }
     if (!isEmailLike(email)) {
       return res.status(400).json({ error: 'Invalid email address.' });
     }
@@ -51,7 +51,7 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Invalid phone number.' });
     }
     if (!isReasonablePassword(password)) {
-      return res.status(400).json({ error: 'Password must be 8–128 characters.' });
+      return res.status(400).json({ error: 'Password must be 8-128 characters.' });
     }
 
     // Ensure email is not already registered (avoid upsert password overwrite risk)
@@ -94,20 +94,17 @@ router.post('/signup', async (req, res) => {
       expires_at,
     });
   } catch (e) {
-    console.error('[signup] error:', e);
+    logger.error({ err: e }, 'signup error');
     return res.status(500).json({ error: e.message || 'Signup failed' });
   }
 });
 
 /* ───────────── POST /app/login ───────────── */
-router.post('/login', async (req, res) => {
+router.post('/login', validate({ body: loginBody }), async (req, res) => {
   try {
     const email = normEmail(req.body?.email || '');
     const password = req.body?.password || '';
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required.' });
-    }
     if (!isEmailLike(email)) {
       return res.status(400).json({ error: 'Invalid email address.' });
     }
@@ -140,7 +137,7 @@ router.post('/login', async (req, res) => {
       expires_at,
     });
   } catch (e) {
-    console.error('[login] error:', e);
+    logger.error({ err: e }, 'login error');
     return res.status(500).json({ error: e.message || 'Login failed' });
   }
 });

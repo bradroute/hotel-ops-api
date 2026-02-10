@@ -4,6 +4,7 @@ import {
   telnyxNumber,                 // fallback DID (+E.164)
   telnyxMessagingProfileId,
 } from '../config/index.js';
+import logger from '../lib/logger.js';
 
 const COMPLIANCE_FOOTER = ' Reply HELP for assistance or STOP to unsubscribe.';
 
@@ -39,7 +40,7 @@ async function sendSmsRaw({ to, text, from }) {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    console.error('❌ Telnyx send error', { status: res.status, data });
+    logger.error({ status: res.status, data }, 'Telnyx send error');
     const err = new Error('Telnyx send failed');
     err.payload = data;
     throw err;
@@ -56,7 +57,7 @@ export async function sendConfirmationSms(destinationNumber, text, opts = {}) {
 
   const payload = `${text}${COMPLIANCE_FOOTER}`;
   const resp = await sendSmsRaw({ to, text: payload, from: opts.from });
-  console.log('✅ Confirmation SMS sent:', resp?.data?.id || resp);
+  logger.info({ messageId: resp?.data?.id }, 'Confirmation SMS sent');
   return resp;
 }
 
@@ -69,6 +70,6 @@ export async function sendRejectionSms(destinationNumber, text, opts = {}) {
 
   const payload = `${text}${COMPLIANCE_FOOTER}`;
   const resp = await sendSmsRaw({ to, text: payload, from: opts.from });
-  console.log('✅ Rejection SMS sent:', resp?.data?.id || resp);
+  logger.info({ messageId: resp?.data?.id }, 'Rejection SMS sent');
   return resp;
 }

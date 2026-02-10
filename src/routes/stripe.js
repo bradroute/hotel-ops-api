@@ -1,6 +1,7 @@
 // routes/stripe.js or your equivalent file
 import express from 'express';
 import Stripe from 'stripe';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -22,7 +23,7 @@ router.post('/create-customer-portal-session', async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
-    console.error('Stripe portal error:', error);
+    logger.error({ err: error }, 'Stripe portal error');
     res.status(500).json({ error: 'Something went wrong.' });
   }
 });

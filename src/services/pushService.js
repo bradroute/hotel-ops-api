@@ -1,5 +1,6 @@
 // src/services/pushService.js
 // Node 18+ has global fetch. If you're on <18, `npm i node-fetch` and import it.
+import logger from '../lib/logger.js';
 const EXPO_URL = 'https://exp.host/--/api/v2/push/send';
 
 function uniqTokens(tokens = []) {
@@ -9,7 +10,7 @@ function uniqTokens(tokens = []) {
 export async function sendExpoPush(tokens, { title, body, data = {} }) {
   const list = uniqTokens(tokens);
   if (!list.length) {
-    console.log('[push] no tokens to send');
+    logger.info('no tokens to send');
     return { sent: 0, tickets: [] };
   }
 
@@ -37,7 +38,7 @@ export async function sendExpoPush(tokens, { title, body, data = {} }) {
     let json = {};
     try { json = await res.json(); } catch {}
     tickets.push(json);
-    console.log('[push] expo response:', JSON.stringify(json).slice(0, 400));
+    logger.info({ response: JSON.stringify(json).slice(0, 400) }, 'expo response');
   }
 
   return { sent: list.length, tickets };

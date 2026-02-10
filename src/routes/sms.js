@@ -5,6 +5,7 @@ import { classify } from '../services/classifier.js';
 import { findByTelnyxId } from '../services/requestLookup.js';
 import { acknowledgeRequestById, completeRequestById } from '../services/requestActions.js';
 import { notifyStaffOnNewRequest } from '../services/notificationService.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -30,9 +31,9 @@ router.use((req, _res, next) => {
     const id = req.body?.data?.payload?.id;
     const text = req.body?.data?.payload?.text ?? '';
     if (evt && from && to) {
-      console.log(`📨 /sms evt=${evt} dir=${dir} id=${id} from=${from} -> to=${to} | "${clip(text)}"`);
+      logger.info({ evt, dir, id, from, to, text: clip(text) }, 'sms webhook received');
     } else {
-      console.log('📨 /sms (unparsable payload shape)');
+      logger.info('sms webhook received (unparsable payload shape)');
     }
   } catch {}
   next();
@@ -40,27 +41,27 @@ router.use((req, _res, next) => {
 
 /* ───────────────────────── auto-pair logic ───────────────────────── */
 async function tryAutoPair({ hotel_id, guest_phone }) {
-  console.log('🔄 tryAutoPair start', { hotel_id, guest_phone });
+  logger.info({ hotel_id, guest_phone }, 'tryAutoPair start');
   const now = new Date().toISOString();
 
   const { data: slots, error: slotsErr } = await supabase
     .from('room_device_slots')
     .select('*')
     .eq('hotel_id', hotel_id);
-  if (slotsErr) console.error('❌ tryAutoPair slotsErr:', slotsErr);
+  if (slotsErr) logger.error({ err: slotsErr }, 'tryAutoPair slotsErr');
 
   for (const slot of slots || []) {
-    console.log('  ➡️ slot room', slot.room_number, 'count', slot.current_count, '/', slot.max_devices);
+    logger.debug({ room: slot.room_number, count: slot.current_count, max: slot.max_devices }, 'tryAutoPair checking slot');
     const { data: activeGuests, error: guestErr } = await supabase
       .from('authorized_numbers')
       .select('expires_at')
       .eq('hotel_id', hotel_id)
       .eq('room_number', slot.room_number)
       .or(`expires_at.gt.${now},expires_at.is.null`);
-    if (guestErr) console.error('❌ tryAutoPair guestErr:', guestErr);
+    if (guestErr) logger.error({ err: guestErr }, 'tryAutoPair guestErr');
 
     if ((activeGuests?.length || 0) > 0 && slot.current_count < slot.max_devices) {
-      console.log('  ✅ pairing', guest_phone, '→', slot.room_number);
+      logger.info({ guest_phone, room: slot.room_number }, 'tryAutoPair pairing guest');
       const expires_at = activeGuests[0].expires_at ?? null;
 
       const { error: authErr } = await supabaseAdmin
@@ -72,20 +73,20 @@ async function tryAutoPair({ hotel_id, guest_phone }) {
           expires_at,
           is_staff: false,
         });
-      if (authErr) console.error('❌ tryAutoPair auth insert error:', authErr);
+      if (authErr) logger.error({ err: authErr }, 'tryAutoPair auth insert error');
 
       const { error: updateErr } = await supabaseAdmin
         .from('room_device_slots')
         .update({ current_count: slot.current_count + 1 })
         .eq('hotel_id', hotel_id)
         .eq('room_number', slot.room_number);
-      if (updateErr) console.error('❌ tryAutoPair slot update error:', updateErr);
+      if (updateErr) logger.error({ err: updateErr }, 'tryAutoPair slot update error');
 
       return { room_number: slot.room_number };
     }
   }
 
-  console.log('  ❌ tryAutoPair: no available slot for', guest_phone);
+  logger.info({ guest_phone }, 'tryAutoPair: no available slot');
   return null;
 }
 
@@ -99,11 +100,11 @@ router.post('/', async (req, res) => {
 
     // Gate: only real inbound MO messages
     if (recordType !== 'event' || !msg || msg.record_type !== 'message') {
-      console.log('⏭️ sms: ignoring non-message record');
+      logger.debug('sms: ignoring non-message record');
       return res.sendStatus(200);
     }
     if (eventType !== 'message.received' || msg.direction !== 'inbound') {
-      console.log('⏭️ sms: ignoring non-inbound event', { eventType, direction: msg.direction });
+      logger.debug({ eventType, direction: msg.direction }, 'sms: ignoring non-inbound event');
       return res.sendStatus(200);
     }
 
@@ -114,18 +115,18 @@ router.post('/', async (req, res) => {
 
     // Drop if from is our own DID (echo/loop protection)
     if (isOurDid(from)) {
-      console.log('⏭️ sms: ignoring echo from our DID', from);
+      logger.debug({ from }, 'sms: ignoring echo from our DID');
       return res.status(200).send('ignored: our DID');
     }
 
     // Idempotency: fast path
     if (await findByTelnyxId(telnyxId)) {
-      console.log('⏭️ sms: duplicate telnyx_id', telnyxId);
+      logger.debug({ telnyxId }, 'sms: duplicate telnyx_id');
       return res.status(200).send('ignored: duplicate');
     }
 
     // ── Resolve hotel by DID ─────────────────────────────────────
-    console.log('🏨 sms: resolving hotel by DID →', to);
+    logger.info({ to }, 'sms: resolving hotel by DID');
 
     let hotelId = null;
 
@@ -136,11 +137,11 @@ router.post('/', async (req, res) => {
         .select('hotel_id')
         .eq('phone_number', to)
         .maybeSingle();
-      if (tnErr) console.warn('⚠️ sms: telnyx_numbers lookup error:', tnErr?.message);
+      if (tnErr) logger.warn({ err: tnErr }, 'sms: telnyx_numbers lookup error');
       hotelId = tn?.hotel_id || null;
-      if (hotelId) console.log('   ✓ matched via telnyx_numbers');
+      if (hotelId) logger.info('sms: matched via telnyx_numbers');
     } catch (e) {
-      console.warn('⚠️ sms: telnyx_numbers lookup failed:', e?.message);
+      logger.warn({ err: e }, 'sms: telnyx_numbers lookup failed');
     }
 
     // 2) Fallback: hotels.phone_number or hotels.front_desk_phone
@@ -150,13 +151,13 @@ router.post('/', async (req, res) => {
         .select('id')
         .or(`phone_number.eq.${to},front_desk_phone.eq.${to}`)
         .maybeSingle();
-      if (h2Err) console.warn('⚠️ sms: hotels fallback lookup error:', h2Err?.message);
+      if (h2Err) logger.warn({ err: h2Err }, 'sms: hotels fallback lookup error');
       hotelId = h2?.id || null;
-      if (hotelId) console.log('   ✓ matched via hotels.{phone_number|front_desk_phone}');
+      if (hotelId) logger.info('sms: matched via hotels.phone_number|front_desk_phone');
     }
 
     if (!hotelId) {
-      console.warn('🚫 sms: unknown DID; no mapping found to=', to);
+      logger.warn({ to }, 'sms: unknown DID; no mapping found');
       return res.status(200).send('ignored: unknown DID');
     }
 
@@ -167,14 +168,14 @@ router.post('/', async (req, res) => {
       .eq('id', hotelId)
       .maybeSingle();
     if (hErr) {
-      console.error('❌ sms: hotel fetch error:', hErr);
+      logger.error({ err: hErr }, 'sms: hotel fetch error');
       return res.status(200).send('ignored: hotel fetch error');
     }
     if (!hotel || hotel.is_active === false) {
-      console.warn('🚫 sms: hotel inactive/not found id=', hotelId);
+      logger.warn({ hotelId }, 'sms: hotel inactive/not found');
       return res.status(200).send('ignored: hotel inactive');
     }
-    console.log('✅ sms: hotel', hotel.id, hotel.name || '');
+    logger.info({ hotelId: hotel.id, hotelName: hotel.name }, 'sms: hotel resolved');
 
     // ── Staff / auth checks ──────────────────────────────────────
     let isStaff = false;
@@ -185,11 +186,11 @@ router.post('/', async (req, res) => {
         .eq('hotel_id', hotel.id)
         .eq('phone', from)
         .maybeSingle();
-      if (staffErr) console.warn('⚠️ sms: staff lookup error:', staffErr?.message);
+      if (staffErr) logger.warn({ err: staffErr }, 'sms: staff lookup error');
       isStaff = !!staffRow?.is_staff;
-      console.log('👥 sms: isStaff?', isStaff);
+      logger.info({ isStaff }, 'sms: staff check result');
     } catch (e) {
-      console.warn('⚠️ sms: staff check failed:', e?.message);
+      logger.warn({ err: e }, 'sms: staff check failed');
     }
 
     let isAuthorized = isStaff;
@@ -197,43 +198,43 @@ router.post('/', async (req, res) => {
     const now = new Date().toISOString();
 
     if (!isAuthorized) {
-      console.log('🔐 sms: checking guest authorization for', from);
+      logger.info({ from }, 'sms: checking guest authorization');
       const { data: existing, error: authErr } = await supabase
         .from('authorized_numbers')
         .select('room_number, expires_at')
         .eq('hotel_id', hotel.id)
         .eq('phone', from)
         .maybeSingle();
-      if (authErr) console.warn('⚠️ sms: auth lookup error:', authErr?.message);
+      if (authErr) logger.warn({ err: authErr }, 'sms: auth lookup error');
 
       if (existing && (existing.expires_at === null || existing.expires_at > now)) {
         isAuthorized = true;
         pairedRoom = existing.room_number;
-        console.log('✅ sms: authorized via existing record; room', pairedRoom || '(none)');
+        logger.info({ room: pairedRoom }, 'sms: authorized via existing record');
       } else {
-        console.log('🔎 sms: trying auto-pair…');
+        logger.info('sms: trying auto-pair');
         const pairing = await tryAutoPair({ hotel_id: hotel.id, guest_phone: from });
         if (pairing) {
           isAuthorized = true;
           pairedRoom = pairing.room_number;
-          console.log('✅ sms: auto-paired to room', pairedRoom);
+          logger.info({ room: pairedRoom }, 'sms: auto-paired');
         }
       }
     }
 
     if (!isAuthorized && REQUIRE_SMS_AUTH) {
-      console.warn('🚫 sms: blocked unauthorized number; auth required (set SMS_REQUIRE_AUTH=false to bypass)');
+      logger.warn('sms: blocked unauthorized number; auth required');
       try {
         await sendRejectionSms(
           from,
           'Your request could not be received. Please contact the front desk to activate your guest access.'
         );
       } catch (e) {
-        console.error('❌ sms: rejection send failed:', e?.payload || e?.message || e);
+        logger.error({ err: e }, 'sms: rejection send failed');
       }
       return res.status(200).send('blocked: unauthorized');
     } else if (!isAuthorized) {
-      console.log('⚠️ sms: bypassing auth for testing (SMS_REQUIRE_AUTH=false)');
+      logger.info('sms: bypassing auth for testing (SMS_REQUIRE_AUTH=false)');
     }
 
     // ── Confirmation (best-effort) ───────────────────────────────
@@ -242,9 +243,9 @@ router.post('/', async (req, res) => {
         from,
         `Operon: Thanks for contacting ${hotel.name || 'the hotel'}. We will be with you shortly. Msg freq may vary. Std msg & data rates apply. We will not sell or share your mobile information for promotional or marketing purposes.`
       );
-      console.log('📤 sms: confirmation sent to', from);
+      logger.info({ to: from }, 'sms: confirmation sent');
     } catch (e) {
-      console.error('❌ sms: confirmation send failed:', e?.payload || e?.message || e);
+      logger.error({ err: e }, 'sms: confirmation send failed');
     }
 
     // ── Classification (best-effort) ─────────────────────────────
@@ -252,9 +253,9 @@ router.post('/', async (req, res) => {
     try {
       const c = await classify(text, hotel.id);
       if (c) classification = { ...classification, ...c };
-      console.log('🧠 sms: classify →', classification);
+      logger.info({ classification }, 'sms: classify result');
     } catch (e) {
-      console.warn('⚠️ sms: classification failed:', e?.message);
+      logger.warn({ err: e }, 'sms: classification failed');
     }
 
     // ── Guest tracking (non-staff) ───────────────────────────────
@@ -273,15 +274,15 @@ router.post('/', async (req, res) => {
             .update({ total_requests: newTotal, last_seen: now, is_vip: newTotal > 10 })
             .eq('hotel_id', hotel.id)
             .eq('phone_number', from);
-          console.log('🗂️ sms: guest updated (total_requests=', newTotal, ')');
+          logger.info({ total_requests: newTotal }, 'sms: guest updated');
         } else {
           await supabase
             .from('guests')
             .insert({ hotel_id: hotel.id, phone_number: from, total_requests: 1, last_seen: now, is_vip: false });
-          console.log('🗂️ sms: guest created');
+          logger.info('sms: guest created');
         }
       } catch (e) {
-        console.warn('⚠️ sms: guest tracking failed (non-fatal):', e?.message);
+        logger.warn({ err: e }, 'sms: guest tracking failed (non-fatal)');
       }
     }
 
@@ -300,20 +301,19 @@ router.post('/', async (req, res) => {
         telnyx_id: telnyxId,
         source: 'sms',
       });
-      console.log('✅ sms: request inserted id=', created?.id, 'source=', created?.source);
+      logger.info({ requestId: created?.id, source: created?.source }, 'sms: request inserted');
     } catch (e) {
-      console.error('🔥 sms: insertRequest failed:', e?.message || e);
+      logger.error({ err: e }, 'sms: insertRequest failed');
       return res.status(200).send('insert failed'); // keep 200 to prevent Telnyx retries
     }
 
     // Async staff notify
-    notifyStaffOnNewRequest(created).catch((e) => console.error('⚠️ staff notify (sms) failed', e));
+    notifyStaffOnNewRequest(created).catch((e) => logger.error({ err: e }, 'staff notify (sms) failed'));
 
-    console.log('🏁 /sms done in', Date.now() - t0, 'ms');
+    logger.info({ durationMs: Date.now() - t0 }, 'sms: webhook complete');
     return res.status(200).json({ success: true });
   } catch (err) {
-    console.error('❌ Error in POST /sms:', err);
-    console.log('🏁 /sms errored in', Date.now() - t0, 'ms');
+    logger.error({ err, durationMs: Date.now() - t0 }, 'sms: webhook error');
     return res.status(200).json({ success: true }); // always 200 to stop Telnyx retries
   }
 });

@@ -1,5 +1,6 @@
 // src/services/smsGateway.js
 import { sendConfirmationSms } from './telnyxService.js';
+import logger from '../lib/logger.js';
 
 const DRY_RUN = process.env.SEND_SMS !== 'true';
 const MAX_LEN = 500; // keep bodies sane; carriers segment long SMS
@@ -21,23 +22,21 @@ export async function sendSms(to, message, context = 'General') {
   const body = String(message ?? '').trim().slice(0, MAX_LEN);
 
   if (!toNorm || !body) {
-    console.warn(`[SMS] missing/invalid to or message; skip send. to="${to}"`);
+    logger.warn({ to }, 'missing/invalid to or message; skip send');
     return;
   }
 
   if (DRY_RUN) {
-    console.log(`[DRY RUN SMS] (${context}) To: ${toNorm} | "${body}"`);
+    logger.info({ context, to: toNorm, body }, 'DRY RUN SMS');
     return { dryRun: true };
   }
 
   try {
     const result = await sendConfirmationSms(toNorm, body);
-    console.log(
-      `[REAL SMS SENT] (${context}) To: ${toNorm} | id: ${result?.data?.id || result?.id || 'unknown'}`
-    );
+    logger.info({ context, to: toNorm, messageId: result?.data?.id || result?.id }, 'SMS sent');
     return result;
   } catch (err) {
-    console.error(`[SMS FAILURE] (${context}) To: ${toNorm}`, err);
+    logger.error({ err, context, to: toNorm }, 'SMS send failure');
     throw err;
   }
 }

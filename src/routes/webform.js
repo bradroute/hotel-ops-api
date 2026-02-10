@@ -1,7 +1,10 @@
 // src/routes/webform.js
 import express from 'express';
+import { z } from 'zod';
 import { insertRequest, getEnabledDepartments } from '../services/supabaseService.js';
 import { classify } from '../services/classifier.js';
+import { validate } from '../middleware/validate.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -10,20 +13,25 @@ function normalizePriority(p) {
   return v === 'low' || v === 'normal' || v === 'urgent' ? v : 'normal';
 }
 
-router.post('/', async (req, res, next) => {
+const webformBody = z.object({
+  hotel_id: z.string().min(1),
+  message: z.string().min(1),
+  from_phone: z.string().nullish().default(null),
+  room_number: z.string().nullish().default(null),
+  space_id: z.string().nullish().default(null),
+  telnyx_id: z.string().nullish().default(null),
+});
+
+router.post('/', validate({ body: webformBody }), async (req, res, next) => {
   try {
     const {
       hotel_id,
       message,
       from_phone = null,
       room_number = null,
-      space_id = null,     // optional: allow space-based requests
-      telnyx_id = null,    // kept for backward compat (will mark source 'sms' if present)
-    } = req.body || {};
-
-    if (!hotel_id || !message) {
-      return res.status(400).send('hotel_id and message are required.');
-    }
+      space_id = null,
+      telnyx_id = null,
+    } = req.body;
 
     // Enforce one-of semantics if both are provided
     if (room_number && space_id) {
@@ -41,10 +49,10 @@ router.post('/', async (req, res, next) => {
       priority     = result?.priority   || priority;
       inferredRoom = result?.room_number ?? null;
     } catch (err) {
-      console.warn('⚠️ Classification failed; using defaults:', err?.message || err);
+      logger.warn({ err }, 'Classification failed; using defaults');
     }
 
-    // Snap department to hotel’s enabled list
+    // Snap department to hotel's enabled list
     try {
       const enabled = await getEnabledDepartments(hotel_id);
       if (Array.isArray(enabled) && enabled.length && !enabled.includes(department)) {

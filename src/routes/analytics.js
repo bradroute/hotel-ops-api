@@ -1,6 +1,9 @@
 // src/routes/analytics.js
 import express from 'express';
 import * as supabaseService from '../services/supabaseService.js';
+import { validate } from '../middleware/validate.js';
+import { analyticsFullQuery } from '../schemas/analytics.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -20,12 +23,9 @@ function clamp(n, min, max) {
   return Math.min(Math.max(n, min), max);
 }
 
-router.get('/full', async (req, res) => {
+router.get('/full', validate({ query: analyticsFullQuery }), async (req, res) => {
   try {
     const { hotel_id: hotelId, startDate, endDate } = req.query;
-    if (!hotelId || !startDate || !endDate) {
-      return res.status(400).json({ error: 'Missing required query params: hotel_id, startDate, endDate' });
-    }
 
     const startObj = new Date(startDate);
     const endObj   = new Date(endDate);
@@ -33,7 +33,7 @@ router.get('/full', async (req, res) => {
       return res.status(400).json({ error: 'Invalid date format for startDate or endDate' });
     }
 
-    // Timezone offset (minutes). Default ≈ America/Chicago (-300)
+    // Timezone offset (minutes). Default ~ America/Chicago (-300)
     const tzOffset = clamp(intOrDefault(req.query.tzOffsetMinutes, -300), -720, 840);
 
     // Inclusive end-of-day range
@@ -119,7 +119,7 @@ router.get('/full', async (req, res) => {
       sentimentBreakdown,
     });
   } catch (err) {
-    console.error('🔥 Analytics API error:', err.stack || err);
+    logger.error({ err }, 'Analytics API error');
     return res.status(500).json({ error: 'API Error: ' + (err.message || 'Unknown error') });
   }
 });

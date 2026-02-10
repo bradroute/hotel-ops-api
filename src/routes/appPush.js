@@ -1,6 +1,7 @@
 // src/routes/appPush.js
 import express from 'express';
 import { supabaseAdmin } from '../services/supabaseService.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -101,7 +102,7 @@ router.post('/register', async (req, res) => {
 
     return res.json({ ok: true, scope: 'staff', user_id, hotel_id });
   } catch (e) {
-    console.error('[appPush.register] error:', e);
+    logger.error({ err: e }, 'appPush.register error');
     return res.status(500).json({ ok: false, error: 'Server error' });
   }
 });

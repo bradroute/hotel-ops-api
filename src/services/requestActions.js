@@ -4,6 +4,7 @@ import {
   notifyGuestOnAcknowledged,
   notifyGuestOnCompleted,
 } from './notificationService.js';
+import logger from '../lib/logger.js';
 
 /**
  * Fetch a request row safely.
@@ -34,7 +35,7 @@ async function insertEvent(request_id, hotel_id, action, actor = 'system') {
       actor,
     });
   } catch (e) {
-    console.warn('[events] insert failed:', e?.message || e);
+    logger.warn({ err: e }, 'event insert failed');
   }
 }
 
@@ -45,15 +46,15 @@ async function insertEvent(request_id, hotel_id, action, actor = 'system') {
  * - Notifies guest via SMS helper (uses telnyx_numbers DID under the hood)
  */
 export async function acknowledgeRequestById(id, hotel_id, actor = 'dashboard') {
-  console.log('▶️ acknowledgeRequestById', { id, hotel_id });
+  logger.info({ id, hotel_id }, 'acknowledgeRequestById');
 
   const row = await getRequestById(id, hotel_id);
   if (!row) {
-    console.warn('ack: not found', id);
+    logger.warn({ id }, 'ack: not found');
     return null;
   }
   if (row.cancelled) {
-    console.warn('ack: already cancelled', id);
+    logger.warn({ id }, 'ack: already cancelled');
     return null;
   }
 
@@ -64,7 +65,7 @@ export async function acknowledgeRequestById(id, hotel_id, actor = 'dashboard') 
   }
 
   if (Object.keys(patch).length === 0) {
-    console.log('ack: already acknowledged, skipping update', id);
+    logger.info({ id }, 'ack: already acknowledged, skipping update');
   } else {
     const { data: updated, error } = await supabase
       .from('requests')
@@ -74,7 +75,7 @@ export async function acknowledgeRequestById(id, hotel_id, actor = 'dashboard') 
       .single();
     if (error) throw error;
     Object.assign(row, updated); // keep latest state
-    console.log('✅ ack: updated', { id: row.id, acknowledged_at: row.acknowledged_at });
+    logger.info({ id: row.id, acknowledged_at: row.acknowledged_at }, 'ack: updated');
   }
 
   await insertEvent(row.id, row.hotel_id, 'acknowledged', actor);
@@ -83,7 +84,7 @@ export async function acknowledgeRequestById(id, hotel_id, actor = 'dashboard') 
   try {
     await notifyGuestOnAcknowledged(row);
   } catch (e) {
-    console.error('[ack] guest notify failed:', e?.message || e);
+    logger.error({ err: e }, 'ack guest notify failed');
   }
 
   return row;
@@ -96,19 +97,19 @@ export async function acknowledgeRequestById(id, hotel_id, actor = 'dashboard') 
  * - Notifies guest via SMS helper (uses telnyx_numbers DID)
  */
 export async function completeRequestById(id, hotel_id, actor = 'dashboard') {
-  console.log('▶️ completeRequestById', { id, hotel_id });
+  logger.info({ id, hotel_id }, 'completeRequestById');
 
   const row = await getRequestById(id, hotel_id);
   if (!row) {
-    console.warn('complete: not found', id);
+    logger.warn({ id }, 'complete: not found');
     return null;
   }
   if (row.cancelled) {
-    console.warn('complete: already cancelled', id);
+    logger.warn({ id }, 'complete: already cancelled');
     return null;
   }
   if (row.completed) {
-    console.log('complete: already completed, no-op', id);
+    logger.info({ id }, 'complete: already completed, no-op');
     return row;
   }
 
@@ -125,7 +126,7 @@ export async function completeRequestById(id, hotel_id, actor = 'dashboard') {
     .single();
   if (error) throw error;
 
-  console.log('✅ complete: updated', { id: updated.id, completed_at: updated.completed_at });
+  logger.info({ id: updated.id, completed_at: updated.completed_at }, 'complete: updated');
 
   await insertEvent(updated.id, updated.hotel_id, 'completed', actor);
 
@@ -133,7 +134,7 @@ export async function completeRequestById(id, hotel_id, actor = 'dashboard') {
   try {
     await notifyGuestOnCompleted(updated);
   } catch (e) {
-    console.error('[complete] guest notify failed:', e?.message || e);
+    logger.error({ err: e }, 'complete guest notify failed');
   }
 
   return updated;

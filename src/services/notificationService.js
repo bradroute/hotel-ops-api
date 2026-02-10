@@ -3,6 +3,7 @@ import { Expo } from 'expo-server-sdk';
 import { supabaseAdmin } from './supabaseService.js';
 import { sendConfirmationSms } from './telnyxService.js';
 import { telnyxNumber as DEFAULT_TELNYX_DID } from '../config/index.js';
+import logger from '../lib/logger.js';
 
 const expo = new Expo();
 
@@ -27,7 +28,7 @@ function uniqStrings(arr = []) {
 async function sendPush(tokens = [], payload) {
   const cleaned = uniqStrings(tokens).filter((t) => Expo.isExpoPushToken(t));
   if (!cleaned.length) {
-    console.log('[push] no valid Expo tokens to send');
+    logger.info('no valid Expo tokens to send');
     return [];
   }
   const messages = cleaned.map((to) => ({
@@ -43,9 +44,9 @@ async function sendPush(tokens = [], payload) {
     try {
       const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
       tickets.push(...ticketChunk);
-      console.log('[push] expo ticket chunk:', JSON.stringify(ticketChunk).slice(0, 400));
+      logger.info({ tickets: JSON.stringify(ticketChunk).slice(0, 400) }, 'expo ticket chunk');
     } catch (e) {
-      console.error('[push] expo chunk failed:', e);
+      logger.error({ err: e }, 'expo chunk failed');
     }
   }
   return tickets;
@@ -58,11 +59,11 @@ async function staffTokens(hotel_id) {
     .select('expo_push_token')
     .eq('hotel_id', hotel_id);
   if (error) {
-    console.error('[push] staff token query error:', error);
+    logger.error({ err: error }, 'staff token query error');
     return [];
   }
   const tokens = uniqStrings((data || []).map((r) => r.expo_push_token));
-  console.log('[push] staff tokens fetched:', tokens.length, 'for hotel', hotel_id);
+  logger.info({ count: tokens.length, hotel_id }, 'staff tokens fetched');
   return tokens;
 }
 
@@ -73,11 +74,11 @@ async function guestTokens(app_account_id) {
     .select('expo_token')
     .eq('app_account_id', app_account_id);
   if (error) {
-    console.error('[push] guest token query error:', error);
+    logger.error({ err: error }, 'guest token query error');
     return [];
   }
   const tokens = uniqStrings((data || []).map((r) => r.expo_token));
-  console.log('[push] guest tokens fetched:', tokens.length, 'for app_account', app_account_id);
+  logger.info({ count: tokens.length, app_account_id }, 'guest tokens fetched');
   return tokens;
 }
 
@@ -99,10 +100,10 @@ async function getHotelDid(hotel_id) {
       .eq('hotel_id', hotel_id)
       .limit(1);
     if (!tnErr && tn?.length && tn[0]?.phone_number) {
-      console.log('[notify] DID via telnyx_numbers:', tn[0].phone_number);
+      logger.info({ did: tn[0].phone_number }, 'DID via telnyx_numbers');
       return tn[0].phone_number;
     }
-    if (tnErr) console.warn('[notify] telnyx_numbers lookup error:', tnErr);
+    if (tnErr) logger.warn({ err: tnErr }, 'telnyx_numbers lookup error');
 
     // 2) fallback → hotels.phone_number
     const { data: hotel, error: hErr } = await supabaseAdmin
@@ -111,21 +112,21 @@ async function getHotelDid(hotel_id) {
       .eq('id', hotel_id)
       .maybeSingle();
     if (!hErr && hotel?.phone_number) {
-      console.log('[notify] DID via hotels.phone_number:', hotel.phone_number, 'name:', hotel?.name);
+      logger.info({ did: hotel.phone_number, name: hotel?.name }, 'DID via hotels.phone_number');
       return hotel.phone_number;
     }
-    if (hErr) console.warn('[notify] hotels fallback error:', hErr);
+    if (hErr) logger.warn({ err: hErr }, 'hotels fallback error');
   } catch (e) {
-    console.warn('[notify] DID resolve unexpected error:', e?.message || e);
+    logger.warn({ err: e }, 'DID resolve unexpected error');
   }
 
   // 3) final fallback → config
   if (DEFAULT_TELNYX_DID) {
-    console.log('[notify] DID via config fallback:', DEFAULT_TELNYX_DID);
+    logger.info({ did: DEFAULT_TELNYX_DID }, 'DID via config fallback');
     return DEFAULT_TELNYX_DID;
   }
 
-  console.warn('[notify] DID resolve: no suitable number found');
+  logger.warn('DID resolve: no suitable number found');
   return undefined;
 }
 
@@ -147,7 +148,7 @@ export async function notifyStaffOnNewRequest(requestRow) {
       categoryId: 'REQUEST_CATEGORY',
     });
   } catch (e) {
-    console.error('[push] notifyStaffOnNewRequest failed:', e);
+    logger.error({ err: e }, 'notifyStaffOnNewRequest failed');
   }
 }
 
@@ -173,7 +174,7 @@ export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' |
     if (source === 'app_guest') {
       const tokens = await guestTokens(appAccountId);
       if (!tokens.length) return;
-      console.log('[push] sending', status, 'push to', tokens.length, 'token(s)');
+      logger.info({ status, tokenCount: tokens.length }, 'sending push notification');
       await sendPush(tokens, {
         title: pushTitle,
         body: pushBody,
@@ -189,11 +190,11 @@ export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' |
 
     if (source === 'sms') {
       if (!phone) {
-        console.warn('[notify] sms source but missing guest phone; skipping');
+        logger.warn('sms source but missing guest phone; skipping');
         return;
       }
       const fromDid = await getHotelDid(requestRow.hotel_id);
-      console.log('[notify] sending', status, 'SMS to', phone, 'from', fromDid || '[default]');
+      logger.info({ status, to: phone, from: fromDid || '[default]' }, 'sending status SMS');
       // telnyxService adds the compliance footer
       await sendConfirmationSms(
         phone,
@@ -204,9 +205,9 @@ export async function notifyGuestOnStatus(requestRow, status /* 'acknowledged' |
     }
 
     // other sources → no guest notification
-    console.log('[notify] no guest notification for source:', source);
+    logger.info({ source }, 'no guest notification for source');
   } catch (e) {
-    console.error('[notify] notifyGuestOnStatus failed:', e);
+    logger.error({ err: e }, 'notifyGuestOnStatus failed');
   }
 }
 

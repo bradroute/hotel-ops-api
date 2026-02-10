@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { errorHandler } from './middleware/errorHandler.js';
+import logger from './lib/logger.js';
 
 import requestsRouter from './routes/requests.js';
 import smsRouter from './routes/sms.js';
@@ -27,7 +28,7 @@ app.use('/api/webform', webformRouter);
 app.use(
   '/sms',
   (req, res, next) => {
-    console.log('🔍 /sms payload:', JSON.stringify(req.body, null, 2));
+    logger.debug({ payload: req.body }, '/sms payload');
     next();
   },
   rateLimit({ windowMs: 60_000, max: 10, message: 'Too many SMS calls.' }),
